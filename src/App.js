@@ -106,7 +106,7 @@ function FitterLogin({ onLogin }) {
 }
 
 // ---------- FITTER FORM ----------
-function FitterForm({ fitterName, onLogout, onSubmit, sites, tasks }) {
+function FitterForm({ fitterName, onLogout, onSubmit, sites, tasks, allEntries, lockedWeeks, onDeleteRecord, onUpdateRecord }) {
   const emptyEntry = () => ({ day: "Monday", siteId: "", hours: "", tasks: [], expenses: [] });
   const emptyExpense = () => ({ description: "", amount: "", receipt: null });
   const [entries, setEntries] = useState([emptyEntry()]);
@@ -167,6 +167,7 @@ function FitterForm({ fitterName, onLogout, onSubmit, sites, tasks }) {
     const record = {
       id: Date.now(),
       fitter: fitterName,
+      deviceId: DEVICE_ID,
       weekKey: getWeekKey(),
       weekLabel: getCurrentWeekLabel(),
       submittedAt: new Date().toISOString(),
@@ -324,6 +325,83 @@ function FitterForm({ fitterName, onLogout, onSubmit, sites, tasks }) {
       <button onClick={addEntry} style={{ ...addRowBtn, marginTop: 12, display: "block" }}>+ Add another day</button>
       {error && <p style={{ color: "#c0392b", fontFamily: "'DM Mono', monospace", fontSize: 12, marginTop: 16 }}>{error}</p>}
       <button onClick={handleSubmit} style={{ ...btnStyle, marginTop: 20, width: "100%" }}>Submit Hours & Expenses</button>
+
+      <MyWeekSubmissions
+        fitterName={fitterName}
+        allEntries={allEntries || []}
+        lockedWeeks={lockedWeeks || []}
+        sites={sites}
+        tasks={tasks}
+        onDeleteRecord={onDeleteRecord}
+        onUpdateRecord={onUpdateRecord}
+      />
+    </div>
+  );
+}
+
+// ---------- MY WEEK SUBMISSIONS (fitter self-service) ----------
+function MyWeekSubmissions({ fitterName, allEntries, lockedWeeks, sites, tasks, onDeleteRecord, onUpdateRecord }) {
+  const [editingId, setEditingId] = useState(null);
+  const [confirmDeleteId, setConfirmDeleteId] = useState(null);
+  const thisWeek = getWeekKey();
+  const locked = lockedWeeks.includes(thisWeek);
+
+  // Only this device's own submissions for the current week
+  const mine = allEntries.filter(r => r.deviceId === DEVICE_ID && r.weekKey === thisWeek);
+
+  if (mine.length === 0) return null;
+
+  return (
+    <div style={{ marginTop: 32, borderTop: "1px solid #e8e4de", paddingTop: 24 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
+        <h3 style={{ fontFamily: "'Playfair Display', serif", fontSize: 18, color: "#1a1a1a", margin: 0 }}>My submissions this week</h3>
+      </div>
+      <p style={{ fontFamily: "'DM Mono', monospace", fontSize: 11, color: "#888", marginTop: 4, marginBottom: 16 }}>
+        {locked ? "This week has been invoiced and can no longer be changed. Speak to Tom if something's wrong." : "You can fix or remove anything you submitted this week, until Tom invoices it."}
+      </p>
+
+      {mine.map(record => (
+        editingId === record.id ? (
+          <EditSubmission
+            key={record.id}
+            record={record}
+            sites={sites}
+            tasks={tasks}
+            onSave={async (updated) => { await onUpdateRecord(record.id, updated); setEditingId(null); }}
+            onCancel={() => setEditingId(null)}
+          />
+        ) : (
+          <div key={record.id} style={{ marginBottom: 12, border: "1px solid #e8e4de", borderRadius: 10, overflow: "hidden" }}>
+            <div style={{ padding: "10px 14px", background: "#f5f2ed", borderBottom: "1px solid #e8e4de", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 11, color: "#888" }}>Submitted {new Date(record.submittedAt).toLocaleDateString("en-GB")} · {record.entries.reduce((a,e)=>a+(e.hours||0),0).toFixed(1)} hrs</span>
+              {locked ? (
+                <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 10, background: "#f0ece6", color: "#999", borderRadius: 6, padding: "4px 10px" }}>🔒 Invoiced</span>
+              ) : (
+                <div style={{ display: "flex", gap: 8 }}>
+                  <button onClick={() => setEditingId(record.id)} style={{ fontFamily: "'DM Mono', monospace", fontSize: 11, background: "none", border: "1px solid #e0dbd4", borderRadius: 6, padding: "4px 10px", cursor: "pointer", color: "#888" }}>Edit</button>
+                  <button onClick={() => setConfirmDeleteId(record.id)} style={{ fontFamily: "'DM Mono', monospace", fontSize: 11, background: "none", border: "1px solid #f5c6cb", borderRadius: 6, padding: "4px 10px", cursor: "pointer", color: "#c0392b" }}>Delete</button>
+                </div>
+              )}
+            </div>
+            {confirmDeleteId === record.id && (
+              <div style={{ padding: "12px 14px", background: "#fff5f5", borderBottom: "1px solid #f5c6cb", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 12, color: "#c0392b" }}>Delete this submission?</span>
+                <div style={{ display: "flex", gap: 8 }}>
+                  <button onClick={() => setConfirmDeleteId(null)} style={{ fontFamily: "'DM Mono', monospace", fontSize: 11, background: "none", border: "1px solid #ddd", borderRadius: 6, padding: "5px 12px", cursor: "pointer", color: "#888" }}>Cancel</button>
+                  <button onClick={async () => { await onDeleteRecord(record.id); setConfirmDeleteId(null); }} style={{ fontFamily: "'DM Mono', monospace", fontSize: 11, background: "#c0392b", border: "none", borderRadius: 6, padding: "5px 12px", cursor: "pointer", color: "#fff" }}>Yes, delete</button>
+                </div>
+              </div>
+            )}
+            {record.entries.map((entry, i) => (
+              <div key={i} style={{ padding: "9px 14px", borderBottom: "1px solid #f5f2ed", display: "grid", gridTemplateColumns: "70px 1fr 50px", gap: 8 }}>
+                <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 11, color: "#aaa" }}>{entry.day?.slice(0,3)}</span>
+                <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 12, color: "#555" }}>{entry.siteName}</span>
+                <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 12, color: "#1a1a1a", textAlign: "right" }}>{entry.hours}h</span>
+              </div>
+            ))}
+          </div>
+        )
+      ))}
     </div>
   );
 }
@@ -348,7 +426,7 @@ function AdminLogin({ onLogin }) {
 }
 
 // ---------- ADMIN DASHBOARD ----------
-function AdminDashboard({ allEntries, sites, tasks, rates, onSitesChange, onTasksChange, onRatesChange, onDeleteRecord, onUpdateRecord, onLogout }) {
+function AdminDashboard({ allEntries, sites, tasks, rates, lockedWeeks, onSitesChange, onTasksChange, onRatesChange, onDeleteRecord, onUpdateRecord, onToggleLock, onLogout }) {
   const [tab, setTab] = useState("submissions");
   return (
     <div>
@@ -366,8 +444,8 @@ function AdminDashboard({ allEntries, sites, tasks, rates, onSitesChange, onTask
           }}>{label}</button>
         ))}
       </div>
-      {tab === "submissions" && <SubmissionsTab allEntries={allEntries} sites={sites} tasks={tasks} onDeleteRecord={onDeleteRecord} onUpdateRecord={onUpdateRecord} />}
-      {tab === "report" && <InvoicesTab allEntries={allEntries} rates={rates} />}
+      {tab === "submissions" && <SubmissionsTab allEntries={allEntries} sites={sites} tasks={tasks} lockedWeeks={lockedWeeks} onDeleteRecord={onDeleteRecord} onUpdateRecord={onUpdateRecord} />}
+      {tab === "report" && <InvoicesTab allEntries={allEntries} rates={rates} lockedWeeks={lockedWeeks} onToggleLock={onToggleLock} />}
       {tab === "rates" && <RatesTab allEntries={allEntries} rates={rates} onRatesChange={onRatesChange} />}
       {tab === "sites" && <SitesTab sites={sites} onSitesChange={onSitesChange} />}
       {tab === "tasks" && <TasksTab tasks={tasks} onTasksChange={onTasksChange} />}
@@ -465,7 +543,7 @@ function RatesTab({ allEntries, rates, onRatesChange }) {
 }
 
 // ---------- INVOICES TAB ----------
-function InvoicesTab({ allEntries, rates }) {
+function InvoicesTab({ allEntries, rates, lockedWeeks, onToggleLock }) {
   const weeks = [...new Set(allEntries.map(e => e.weekKey))].sort().reverse();
   const clients = [...new Set(allEntries.flatMap(e => e.entries.map(en => en.client)).filter(Boolean))].sort();
   const [filterWeek, setFilterWeek] = useState(weeks[0] || "all");
@@ -651,6 +729,21 @@ function InvoicesTab({ allEntries, rates }) {
         <div><label style={labelStyle}>Due Date</label><input value={dueDate} onChange={e => setDueDate(e.target.value)} style={{ ...inputStyle, fontSize: 12 }} /></div>
       </div>
 
+      {/* Lock / mark invoiced control */}
+      {filterWeek !== "all" && (
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", background: (lockedWeeks || []).includes(filterWeek) ? "#f0ece6" : "#faf6ef", border: "1px solid #e8e4de", borderRadius: 8, padding: "10px 14px", marginBottom: 16 }}>
+          <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 12, color: (lockedWeeks || []).includes(filterWeek) ? "#999" : "#8a6d3b" }}>
+            {(lockedWeeks || []).includes(filterWeek) ? "🔒 This week is invoiced and locked. Nobody can edit it." : "Once you've generated and sent the invoice, lock this week to prevent further changes."}
+          </span>
+          <button onClick={() => onToggleLock(filterWeek)} style={{ fontFamily: "'DM Mono', monospace", fontSize: 11, background: (lockedWeeks || []).includes(filterWeek) ? "#fff" : "#1a1a1a", color: (lockedWeeks || []).includes(filterWeek) ? "#1a1a1a" : "#fff", border: (lockedWeeks || []).includes(filterWeek) ? "1px solid #ddd" : "none", borderRadius: 6, padding: "7px 14px", cursor: "pointer", whiteSpace: "nowrap", marginLeft: 12 }}>
+            {(lockedWeeks || []).includes(filterWeek) ? "Unlock week" : "🔒 Lock (mark invoiced)"}
+          </button>
+        </div>
+      )}
+      {filterWeek === "all" && (
+        <p style={{ fontFamily: "'DM Mono', monospace", fontSize: 11, color: "#bbb", marginBottom: 16 }}>Select a specific week above to lock it once invoiced.</p>
+      )}
+
       {lines.length === 0 ? (
         <div style={{ textAlign: "center", padding: "32px 0", color: "#bbb", fontFamily: "'DM Mono', monospace", fontSize: 13 }}>No submissions for this selection.</div>
       ) : (
@@ -801,7 +894,7 @@ function InvoicesTab({ allEntries, rates }) {
 }
 
 // ---------- SUBMISSIONS TAB ----------
-function SubmissionsTab({ allEntries, sites, tasks, onDeleteRecord, onUpdateRecord }) {
+function SubmissionsTab({ allEntries, sites, tasks, lockedWeeks, onDeleteRecord, onUpdateRecord }) {
   const [filterWeek, setFilterWeek] = useState("all");
   const [filterFitter, setFilterFitter] = useState("all");
   const [filterClient, setFilterClient] = useState("all");
@@ -862,8 +955,14 @@ function SubmissionsTab({ allEntries, sites, tasks, onDeleteRecord, onUpdateReco
                 <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 11, color: "#888" }}>
                   {record.entries.reduce((a, e) => a + (e.hours || 0), 0).toFixed(1)} hrs
                 </span>
-                <button onClick={() => setEditingId(record.id)} style={{ fontFamily: "'DM Mono', monospace", fontSize: 11, background: "none", border: "1px solid #e0dbd4", borderRadius: 6, padding: "4px 10px", cursor: "pointer", color: "#888" }}>Edit</button>
-                <button onClick={() => setConfirmDeleteId(record.id)} style={{ fontFamily: "'DM Mono', monospace", fontSize: 11, background: "none", border: "1px solid #f5c6cb", borderRadius: 6, padding: "4px 10px", cursor: "pointer", color: "#c0392b" }}>Delete</button>
+                {(lockedWeeks || []).includes(record.weekKey) ? (
+                  <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 10, background: "#f0ece6", color: "#999", borderRadius: 6, padding: "4px 10px" }}>🔒 Invoiced</span>
+                ) : (
+                  <>
+                    <button onClick={() => setEditingId(record.id)} style={{ fontFamily: "'DM Mono', monospace", fontSize: 11, background: "none", border: "1px solid #e0dbd4", borderRadius: 6, padding: "4px 10px", cursor: "pointer", color: "#888" }}>Edit</button>
+                    <button onClick={() => setConfirmDeleteId(record.id)} style={{ fontFamily: "'DM Mono', monospace", fontSize: 11, background: "none", border: "1px solid #f5c6cb", borderRadius: 6, padding: "4px 10px", cursor: "pointer", color: "#c0392b" }}>Delete</button>
+                  </>
+                )}
               </div>
             </div>
 
@@ -1134,18 +1233,21 @@ export default function App() {
   const [sites, setSites] = useState([]);
   const [tasks, setTasks] = useState([]);
   const [rates, setRates] = useState({});
+  const [lockedWeeks, setLockedWeeks] = useState([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     Promise.all([
       load("finefit_entries"), loadStr("finefit_fitter_name"),
       load("finefit_sites"), load("finefit_tasks"), load("finefit_rates"),
-    ]).then(([entries, name, savedSites, savedTasks, savedRates]) => {
+      load("finefit_locked_weeks"),
+    ]).then(([entries, name, savedSites, savedTasks, savedRates, savedLocks]) => {
       setAllEntries(entries || []);
       if (name) setFitterName(name);
       setSites(savedSites || []);
       setTasks(savedTasks || []);
       setRates(savedRates || {});
+      setLockedWeeks(savedLocks || []);
       setLoading(false);
     });
   }, []);
@@ -1157,6 +1259,10 @@ export default function App() {
   const handleDeleteRecord = async (recordId) => { const u = allEntries.filter(r => r.id !== recordId); setAllEntries(u); await save("finefit_entries", u); };
   const handleUpdateRecord = async (recordId, updatedRecord) => { const u = allEntries.map(r => r.id === recordId ? updatedRecord : r); setAllEntries(u); await save("finefit_entries", u); };
   const handleFitterLogout = async () => { await del("finefit_fitter_name"); setFitterName(null); };
+  const handleToggleLock = async (weekKey) => {
+    const u = lockedWeeks.includes(weekKey) ? lockedWeeks.filter(w => w !== weekKey) : [...lockedWeeks, weekKey];
+    setLockedWeeks(u); await save("finefit_locked_weeks", u);
+  };
   const isFitter = view === "fitter";
 
   return (
@@ -1175,15 +1281,16 @@ export default function App() {
             <p style={{ textAlign: "center", fontFamily: "'DM Mono', monospace", color: "#aaa" }}>Loading…</p>
           ) : view === "fitter" ? (
             fitterName
-              ? <FitterForm fitterName={fitterName} onLogout={handleFitterLogout} onSubmit={handleSubmit} sites={sites} tasks={tasks} />
+              ? <FitterForm fitterName={fitterName} onLogout={handleFitterLogout} onSubmit={handleSubmit} sites={sites} tasks={tasks}
+                  allEntries={allEntries} lockedWeeks={lockedWeeks} onDeleteRecord={handleDeleteRecord} onUpdateRecord={handleUpdateRecord} />
               : <FitterLogin onLogin={setFitterName} />
           ) : view === "adminLogin" ? (
             <AdminLogin onLogin={() => setView("admin")} />
           ) : (
             <AdminDashboard allEntries={allEntries} sites={sites} tasks={tasks} rates={rates}
-              onSitesChange={handleSitesChange} onTasksChange={handleTasksChange}
+              lockedWeeks={lockedWeeks} onSitesChange={handleSitesChange} onTasksChange={handleTasksChange}
               onRatesChange={handleRatesChange} onDeleteRecord={handleDeleteRecord}
-              onUpdateRecord={handleUpdateRecord} onLogout={() => setView("fitter")} />
+              onUpdateRecord={handleUpdateRecord} onToggleLock={handleToggleLock} onLogout={() => setView("fitter")} />
           )}
         </div>
       </main>
