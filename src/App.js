@@ -128,10 +128,15 @@ function FitterForm({ fitterName, onLogout, onSubmit, sites, tasks, allEntries, 
   const draftKey = `finefit_draft_${fitterName}`;
 
   // Restore any saved draft for this fitter on this device
+  const [restoredDraft, setRestoredDraft] = useState(false);
   const [entries, setEntries] = useState(() => {
     try {
       const raw = localStorage.getItem(draftKey);
-      if (raw) { const d = JSON.parse(raw); if (Array.isArray(d) && d.length) return d; }
+      if (raw) {
+        const d = JSON.parse(raw);
+        // Only treat as a real draft if something meaningful was entered
+        if (Array.isArray(d) && d.some(e => e.siteId || e.hours)) return d;
+      }
     } catch {}
     return [emptyEntry()];
   });
@@ -139,6 +144,12 @@ function FitterForm({ fitterName, onLogout, onSubmit, sites, tasks, allEntries, 
   const [error, setError] = useState("");
   const [confirmData, setConfirmData] = useState(null); // holds { record, warnings } when confirming
   const fileRefs = useRef({});
+
+  // Flag a restored draft once, on first load
+  useEffect(() => {
+    if (entries.some(e => e.siteId || e.hours)) setRestoredDraft(true);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Auto-save draft whenever entries change (skip once submitted)
   useEffect(() => {
@@ -246,6 +257,13 @@ function FitterForm({ fitterName, onLogout, onSubmit, sites, tasks, allEntries, 
     // High weekly total
     if (runningTotal > 60) warnings.push(`Your total for the week would be ${runningTotal.toFixed(1)} hours — please check that's correct.`);
 
+    // Expense without a receipt attached
+    builtEntries.forEach(ne => {
+      (ne.expenses || []).forEach(x => {
+        if (!x.receipt) warnings.push(`${ne.day}: expense "${x.description}" has no receipt photo — add one so Tom can claim it back.`);
+      });
+    });
+
     const record = {
       id: Date.now(),
       fitter: fitterName,
@@ -261,6 +279,7 @@ function FitterForm({ fitterName, onLogout, onSubmit, sites, tasks, allEntries, 
   const confirmSubmit = async () => {
     await onSubmit(confirmData.record);
     clearDraft();
+    setRestoredDraft(false);
     setConfirmData(null);
     setSubmitted(true);
   };
@@ -283,7 +302,7 @@ function FitterForm({ fitterName, onLogout, onSubmit, sites, tasks, allEntries, 
         <div style={{ fontSize: 48, marginBottom: 16 }}>✓</div>
         <h2 style={{ fontFamily: "'Playfair Display', serif", fontSize: 26, marginBottom: 8, color: "#1a1a1a" }}>Submitted!</h2>
         <p style={{ color: "#666", fontFamily: "'DM Mono', monospace", fontSize: 13 }}>Hours and expenses logged. Thanks {fitterName}.</p>
-        <button onClick={() => { setSubmitted(false); setEntries([emptyEntry()]); }} style={btnStyle}>Submit more</button>
+        <button onClick={() => { setSubmitted(false); setRestoredDraft(false); setEntries([emptyEntry()]); }} style={btnStyle}>Submit more</button>
       </div>
     );
   }
@@ -337,13 +356,26 @@ function FitterForm({ fitterName, onLogout, onSubmit, sites, tasks, allEntries, 
 
   return (
     <div>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 24 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 16 }}>
         <div>
           <h2 style={{ fontFamily: "'Playfair Display', serif", fontSize: 22, marginBottom: 2, color: "#1a1a1a" }}>Hi, {fitterName}</h2>
-          <p style={{ fontFamily: "'DM Mono', monospace", fontSize: 12, color: "#888", margin: 0 }}>Week: {getCurrentWeekLabel()}</p>
         </div>
         <button onClick={onLogout} style={{ fontFamily: "'DM Mono', monospace", fontSize: 11, background: "none", border: "1px solid #e0dbd4", borderRadius: 6, padding: "5px 10px", cursor: "pointer", color: "#aaa", marginTop: 4 }}>Not you?</button>
       </div>
+
+      {/* Prominent week banner */}
+      <div style={{ background: "#1a1a1a", borderRadius: 10, padding: "12px 16px", marginBottom: 16, textAlign: "center" }}>
+        <div style={{ fontFamily: "'DM Mono', monospace", fontSize: 10, color: "#888", textTransform: "uppercase", letterSpacing: "0.15em", marginBottom: 3 }}>You are logging hours for</div>
+        <div style={{ fontFamily: "'Playfair Display', serif", fontSize: 17, color: "#C8A96E", fontWeight: 600 }}>{getCurrentWeekLabel()}</div>
+      </div>
+
+      {/* Unsaved hours nudge */}
+      {restoredDraft && (
+        <div style={{ background: "#fff8e8", border: "1px solid #f39c12", borderRadius: 10, padding: "10px 14px", marginBottom: 16, display: "flex", alignItems: "center", gap: 8 }}>
+          <span style={{ fontSize: 16 }}>📝</span>
+          <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 12, color: "#8a6d3b" }}>You have hours here you haven't submitted yet — don't forget to hit Review &amp; Submit when you're done.</span>
+        </div>
+      )}
 
       <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
         {entries.map((entry, i) => {
