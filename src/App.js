@@ -348,7 +348,7 @@ function AdminLogin({ onLogin }) {
 }
 
 // ---------- ADMIN DASHBOARD ----------
-function AdminDashboard({ allEntries, sites, tasks, rates, onSitesChange, onTasksChange, onRatesChange, onLogout }) {
+function AdminDashboard({ allEntries, sites, tasks, rates, onSitesChange, onTasksChange, onRatesChange, onDeleteRecord, onUpdateRecord, onLogout }) {
   const [tab, setTab] = useState("submissions");
   return (
     <div>
@@ -366,7 +366,7 @@ function AdminDashboard({ allEntries, sites, tasks, rates, onSitesChange, onTask
           }}>{label}</button>
         ))}
       </div>
-      {tab === "submissions" && <SubmissionsTab allEntries={allEntries} />}
+      {tab === "submissions" && <SubmissionsTab allEntries={allEntries} sites={sites} tasks={tasks} onDeleteRecord={onDeleteRecord} onUpdateRecord={onUpdateRecord} />}
       {tab === "report" && <InvoicesTab allEntries={allEntries} rates={rates} />}
       {tab === "rates" && <RatesTab allEntries={allEntries} rates={rates} onRatesChange={onRatesChange} />}
       {tab === "sites" && <SitesTab sites={sites} onSitesChange={onSitesChange} />}
@@ -801,10 +801,12 @@ function InvoicesTab({ allEntries, rates }) {
 }
 
 // ---------- SUBMISSIONS TAB ----------
-function SubmissionsTab({ allEntries }) {
+function SubmissionsTab({ allEntries, sites, tasks, onDeleteRecord, onUpdateRecord }) {
   const [filterWeek, setFilterWeek] = useState("all");
   const [filterFitter, setFilterFitter] = useState("all");
   const [filterClient, setFilterClient] = useState("all");
+  const [editingId, setEditingId] = useState(null);
+  const [confirmDeleteId, setConfirmDeleteId] = useState(null);
 
   const weeks = [...new Set(allEntries.map(e => e.weekKey))].sort().reverse();
   const fitters = [...new Set(allEntries.map(e => e.fitter))].sort();
@@ -817,19 +819,7 @@ function SubmissionsTab({ allEntries }) {
     return true;
   });
 
-  const flatEntries = filtered.flatMap(record =>
-    record.entries
-      .filter(en => filterClient === "all" || en.client === filterClient)
-      .map(en => ({ ...en, fitter: record.fitter }))
-  );
-  const totalHours = flatEntries.reduce((a, e) => a + (e.hours || 0), 0);
-  const grouped = {};
-  filtered.forEach(r => {
-    const entries = filterClient === "all" ? r.entries : r.entries.filter(en => en.client === filterClient);
-    if (entries.length === 0) return;
-    if (!grouped[r.fitter]) grouped[r.fitter] = [];
-    grouped[r.fitter].push({ ...r, entries });
-  });
+  const totalHours = filtered.flatMap(r => r.entries).reduce((a, e) => a + (e.hours || 0), 0);
 
   return (
     <div>
@@ -847,49 +837,211 @@ function SubmissionsTab({ allEntries }) {
           {clients.map(c => <option key={c}>{c}</option>)}
         </select>
       </div>
-      <p style={{ fontFamily: "'DM Mono', monospace", fontSize: 11, color: "#888", marginBottom: 16 }}>{flatEntries.length} entr{flatEntries.length !== 1 ? "ies" : "y"} · {totalHours.toFixed(1)} hrs</p>
-      {Object.keys(grouped).length === 0 ? (
+      <p style={{ fontFamily: "'DM Mono', monospace", fontSize: 11, color: "#888", marginBottom: 16 }}>{filtered.length} submission{filtered.length !== 1 ? "s" : ""} · {totalHours.toFixed(1)} hrs</p>
+
+      {filtered.length === 0 ? (
         <div style={{ textAlign: "center", padding: "40px 0", color: "#bbb", fontFamily: "'DM Mono', monospace", fontSize: 13 }}>No submissions match these filters.</div>
-      ) : Object.entries(grouped).map(([fitter, records]) => (
-        <div key={fitter} style={{ marginBottom: 16, border: "1px solid #e8e4de", borderRadius: 10, overflow: "hidden" }}>
-          <div style={{ padding: "10px 14px", background: "#f5f2ed", borderBottom: "1px solid #e8e4de", display: "flex", justifyContent: "space-between" }}>
-            <span style={{ fontFamily: "'Playfair Display', serif", fontSize: 15, fontWeight: 600, color: "#1a1a1a" }}>{fitter}</span>
-            <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 11, color: "#888" }}>
-              {records.flatMap(r => r.entries).reduce((a, e) => a + (e.hours || 0), 0).toFixed(1)} hrs
-            </span>
-          </div>
-          {records.flatMap(r => r.entries.map((entry, i) => (
-            <div key={`${r.id}-${i}`} style={{ padding: "10px 14px", borderBottom: "1px solid #f5f2ed" }}>
-              <div style={{ display: "grid", gridTemplateColumns: "80px 1fr 1fr 50px", gap: 8, marginBottom: (entry.tasks?.length || entry.expenses?.length) ? 6 : 0 }}>
-                <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 11, color: "#aaa" }}>{entry.day?.slice(0,3)}</span>
-                <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 12, color: "#555" }}>{entry.siteName}</span>
-                <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 12, color: "#C8A96E" }}>{entry.client}</span>
-                <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 12, color: "#1a1a1a", textAlign: "right" }}>{(entry.hours || 0)}h</span>
+      ) : filtered.map(record => (
+        editingId === record.id ? (
+          <EditSubmission
+            key={record.id}
+            record={record}
+            sites={sites}
+            tasks={tasks}
+            onSave={async (updated) => { await onUpdateRecord(record.id, updated); setEditingId(null); }}
+            onCancel={() => setEditingId(null)}
+          />
+        ) : (
+          <div key={record.id} style={{ marginBottom: 16, border: "1px solid #e8e4de", borderRadius: 10, overflow: "hidden" }}>
+            <div style={{ padding: "10px 14px", background: "#f5f2ed", borderBottom: "1px solid #e8e4de", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <div>
+                <span style={{ fontFamily: "'Playfair Display', serif", fontSize: 15, fontWeight: 600, color: "#1a1a1a" }}>{record.fitter}</span>
+                <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 10, color: "#aaa", marginLeft: 8 }}>{record.weekLabel}</span>
               </div>
-              {entry.tasks?.length > 0 && (
-                <div style={{ display: "flex", gap: 4, flexWrap: "wrap", paddingLeft: 88, marginBottom: 4 }}>
-                  {entry.tasks.map(t => (
-                    <span key={t.id} style={{ fontFamily: "'DM Mono', monospace", fontSize: 10, padding: "2px 7px", background: "#f0ece6", borderRadius: 10, color: "#666" }}>{t.label}</span>
-                  ))}
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 11, color: "#888" }}>
+                  {record.entries.reduce((a, e) => a + (e.hours || 0), 0).toFixed(1)} hrs
+                </span>
+                <button onClick={() => setEditingId(record.id)} style={{ fontFamily: "'DM Mono', monospace", fontSize: 11, background: "none", border: "1px solid #e0dbd4", borderRadius: 6, padding: "4px 10px", cursor: "pointer", color: "#888" }}>Edit</button>
+                <button onClick={() => setConfirmDeleteId(record.id)} style={{ fontFamily: "'DM Mono', monospace", fontSize: 11, background: "none", border: "1px solid #f5c6cb", borderRadius: 6, padding: "4px 10px", cursor: "pointer", color: "#c0392b" }}>Delete</button>
+              </div>
+            </div>
+
+            {confirmDeleteId === record.id && (
+              <div style={{ padding: "12px 14px", background: "#fff5f5", borderBottom: "1px solid #f5c6cb", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 12, color: "#c0392b" }}>Delete this whole submission? This can't be undone.</span>
+                <div style={{ display: "flex", gap: 8 }}>
+                  <button onClick={() => setConfirmDeleteId(null)} style={{ fontFamily: "'DM Mono', monospace", fontSize: 11, background: "none", border: "1px solid #ddd", borderRadius: 6, padding: "5px 12px", cursor: "pointer", color: "#888" }}>Cancel</button>
+                  <button onClick={async () => { await onDeleteRecord(record.id); setConfirmDeleteId(null); }} style={{ fontFamily: "'DM Mono', monospace", fontSize: 11, background: "#c0392b", border: "none", borderRadius: 6, padding: "5px 12px", cursor: "pointer", color: "#fff" }}>Yes, delete</button>
                 </div>
+              </div>
+            )}
+
+            {record.entries.map((entry, i) => (
+              <div key={i} style={{ padding: "10px 14px", borderBottom: "1px solid #f5f2ed" }}>
+                <div style={{ display: "grid", gridTemplateColumns: "80px 1fr 1fr 50px", gap: 8, marginBottom: (entry.tasks?.length || entry.expenses?.length) ? 6 : 0 }}>
+                  <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 11, color: "#aaa" }}>{entry.day?.slice(0,3)}</span>
+                  <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 12, color: "#555" }}>{entry.siteName}</span>
+                  <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 12, color: "#C8A96E" }}>{entry.client}</span>
+                  <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 12, color: "#1a1a1a", textAlign: "right" }}>{(entry.hours || 0)}h</span>
+                </div>
+                {entry.tasks?.length > 0 && (
+                  <div style={{ display: "flex", gap: 4, flexWrap: "wrap", paddingLeft: 88, marginBottom: 4 }}>
+                    {entry.tasks.map(t => (
+                      <span key={t.id} style={{ fontFamily: "'DM Mono', monospace", fontSize: 10, padding: "2px 7px", background: "#f0ece6", borderRadius: 10, color: "#666" }}>{t.label}</span>
+                    ))}
+                  </div>
+                )}
+                {entry.expenses?.length > 0 && (
+                  <div style={{ paddingLeft: 88 }}>
+                    {entry.expenses.map((exp, ei) => (
+                      <div key={ei} style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
+                        <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 11, color: "#888" }}>💰 {exp.description} — <strong>£{(exp.amount || 0).toFixed(2)}</strong></span>
+                        {exp.receipt && (
+                          <img src={exp.receipt} alt="" style={{ width: 28, height: 28, objectFit: "cover", borderRadius: 4, border: "1px solid #e0dbd4", cursor: "pointer" }}
+                            onClick={() => window.open(exp.receipt, "_blank")} />
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        )
+      ))}
+    </div>
+  );
+}
+
+// ---------- EDIT SUBMISSION ----------
+function EditSubmission({ record, sites, tasks, onSave, onCancel }) {
+  const [entries, setEntries] = useState(record.entries.map(e => ({
+    ...e,
+    hours: String(e.hours ?? ""),
+    tasks: (e.tasks || []).map(t => t.id),
+    expenses: (e.expenses || []).map(x => ({ ...x, amount: String(x.amount ?? "") }))
+  })));
+  const [error, setError] = useState("");
+
+  const updateEntry = (i, field, value) => {
+    const u = [...entries]; u[i] = { ...u[i], [field]: value }; setEntries(u);
+  };
+  const toggleTask = (i, taskId) => {
+    const cur = entries[i].tasks;
+    updateEntry(i, "tasks", cur.includes(taskId) ? cur.filter(t => t !== taskId) : [...cur, taskId]);
+  };
+  const updateExpense = (i, ei, field, value) => {
+    const u = [...entries];
+    const exps = [...(u[i].expenses || [])];
+    exps[ei] = { ...exps[ei], [field]: value };
+    u[i] = { ...u[i], expenses: exps };
+    setEntries(u);
+  };
+  const removeExpense = (i, ei) => {
+    const u = [...entries];
+    u[i] = { ...u[i], expenses: (u[i].expenses || []).filter((_, idx) => idx !== ei) };
+    setEntries(u);
+  };
+  const removeEntry = (i) => setEntries(entries.filter((_, idx) => idx !== i));
+
+  const save = () => {
+    setError("");
+    if (entries.length === 0) { setError("A submission needs at least one day."); return; }
+    for (const e of entries) {
+      const h = parseFloat(e.hours);
+      if (!e.hours || isNaN(h) || h <= 0 || h > 24) { setError("Please enter valid hours (0–24) for each day."); return; }
+    }
+    const site = (id) => sites.find(s => s.id === id);
+    const taskLabel = (id) => tasks.find(t => t.id === id)?.name || id;
+    const updated = {
+      ...record,
+      entries: entries.map(e => {
+        const s = site(e.siteId);
+        return {
+          day: e.day,
+          siteId: e.siteId,
+          siteName: s?.name || e.siteName || e.siteId,
+          client: s?.client || e.client || "",
+          hours: parseFloat(e.hours),
+          tasks: e.tasks.map(id => ({ id, label: taskLabel(id) })),
+          expenses: (e.expenses || []).map(x => ({ description: x.description, amount: parseFloat(x.amount) || 0, receipt: x.receipt || null }))
+        };
+      })
+    };
+    onSave(updated);
+  };
+
+  return (
+    <div style={{ marginBottom: 16, border: "2px solid #C8A96E", borderRadius: 10, overflow: "hidden" }}>
+      <div style={{ padding: "10px 14px", background: "#faf6ef", borderBottom: "1px solid #e8e4de" }}>
+        <span style={{ fontFamily: "'Playfair Display', serif", fontSize: 15, fontWeight: 600, color: "#1a1a1a" }}>Editing: {record.fitter}</span>
+        <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 10, color: "#aaa", marginLeft: 8 }}>{record.weekLabel}</span>
+      </div>
+
+      <div style={{ padding: 14, display: "flex", flexDirection: "column", gap: 14 }}>
+        {entries.map((entry, i) => {
+          const selectedSite = sites.find(s => s.id === entry.siteId);
+          return (
+            <div key={i} style={{ border: "1px solid #e8e4de", borderRadius: 8, padding: 12 }}>
+              <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 10 }}>
+                <select value={entry.day} onChange={e => updateEntry(i, "day", e.target.value)} style={{ ...selectStyle, flex: "0 0 120px", fontSize: 12 }}>
+                  {DAYS.map(d => <option key={d}>{d}</option>)}
+                </select>
+                <div style={{ flex: 1 }} />
+                {entries.length > 1 && (
+                  <button onClick={() => removeEntry(i)} style={{ fontFamily: "'DM Mono', monospace", fontSize: 11, background: "none", border: "1px solid #f5c6cb", borderRadius: 6, padding: "4px 10px", cursor: "pointer", color: "#c0392b" }}>Remove day</button>
+                )}
+              </div>
+
+              <label style={{ ...labelStyle, marginBottom: 4 }}>Site</label>
+              <select value={entry.siteId} onChange={e => updateEntry(i, "siteId", e.target.value)} style={{ ...selectStyle, fontSize: 12 }}>
+                <option value="">— Select site —</option>
+                {sites.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+              </select>
+              {selectedSite && (
+                <div style={{ marginTop: 6, fontFamily: "'DM Mono', monospace", fontSize: 11, color: "#C8A96E" }}>Client: {selectedSite.client}</div>
               )}
-              {entry.expenses?.length > 0 && (
-                <div style={{ paddingLeft: 88 }}>
+
+              <label style={{ ...labelStyle, marginTop: 12, marginBottom: 4 }}>Hours</label>
+              <input value={entry.hours} onChange={e => updateEntry(i, "hours", e.target.value)} type="number" min="0" max="24" step="0.5" style={{ ...inputStyle, width: 100, fontSize: 12 }} />
+
+              <label style={{ ...labelStyle, marginTop: 12, marginBottom: 6 }}>Tasks</label>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                {tasks.map(task => {
+                  const checked = entry.tasks.includes(task.id);
+                  return (
+                    <button key={task.id} onClick={() => toggleTask(i, task.id)} style={{
+                      fontFamily: "'DM Mono', monospace", fontSize: 11, padding: "5px 10px", borderRadius: 16,
+                      border: `1px solid ${checked ? "#1a1a1a" : "#e0dbd4"}`, background: checked ? "#1a1a1a" : "transparent",
+                      color: checked ? "#fff" : "#888", cursor: "pointer" }}>{task.name}</button>
+                  );
+                })}
+              </div>
+
+              {(entry.expenses || []).length > 0 && (
+                <div style={{ marginTop: 12 }}>
+                  <label style={{ ...labelStyle, marginBottom: 6 }}>Expenses</label>
                   {entry.expenses.map((exp, ei) => (
-                    <div key={ei} style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
-                      <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 11, color: "#888" }}>💰 {exp.description} — <strong>£{(exp.amount || 0).toFixed(2)}</strong></span>
-                      {exp.receipt && (
-                        <img src={exp.receipt} alt="" style={{ width: 28, height: 28, objectFit: "cover", borderRadius: 4, border: "1px solid #e0dbd4", cursor: "pointer" }}
-                          onClick={() => window.open(exp.receipt, "_blank")} />
-                      )}
+                    <div key={ei} style={{ display: "grid", gridTemplateColumns: "1fr 90px 28px", gap: 6, marginBottom: 6, alignItems: "center" }}>
+                      <input value={exp.description} onChange={e => updateExpense(i, ei, "description", e.target.value)} style={{ ...inputStyle, fontSize: 12 }} />
+                      <input value={exp.amount} onChange={e => updateExpense(i, ei, "amount", e.target.value)} type="number" min="0" step="0.01" style={{ ...inputStyle, fontSize: 12 }} />
+                      <button onClick={() => removeExpense(i, ei)} style={{ background: "none", border: "1px solid #eee", borderRadius: 6, color: "#ccc", cursor: "pointer", fontSize: 14, height: 38 }}>×</button>
                     </div>
                   ))}
                 </div>
               )}
             </div>
-          )))}
-        </div>
-      ))}
+          );
+        })}
+      </div>
+
+      {error && <p style={{ color: "#c0392b", fontFamily: "'DM Mono', monospace", fontSize: 12, padding: "0 14px" }}>{error}</p>}
+
+      <div style={{ padding: 14, display: "flex", gap: 8, justifyContent: "flex-end", borderTop: "1px solid #e8e4de" }}>
+        <button onClick={onCancel} style={{ fontFamily: "'DM Mono', monospace", fontSize: 12, background: "none", border: "1px solid #ddd", borderRadius: 6, padding: "8px 16px", cursor: "pointer", color: "#888" }}>Cancel</button>
+        <button onClick={save} style={{ ...btnStyle, marginTop: 0, padding: "8px 20px" }}>Save Changes</button>
+      </div>
     </div>
   );
 }
@@ -1002,6 +1154,8 @@ export default function App() {
   const handleTasksChange = async (u) => { setTasks(u); await save("finefit_tasks", u); };
   const handleRatesChange = async (u) => { setRates(u); await save("finefit_rates", u); };
   const handleSubmit = async (record) => { const u = [...allEntries, record]; setAllEntries(u); await save("finefit_entries", u); };
+  const handleDeleteRecord = async (recordId) => { const u = allEntries.filter(r => r.id !== recordId); setAllEntries(u); await save("finefit_entries", u); };
+  const handleUpdateRecord = async (recordId, updatedRecord) => { const u = allEntries.map(r => r.id === recordId ? updatedRecord : r); setAllEntries(u); await save("finefit_entries", u); };
   const handleFitterLogout = async () => { await del("finefit_fitter_name"); setFitterName(null); };
   const isFitter = view === "fitter";
 
@@ -1028,7 +1182,8 @@ export default function App() {
           ) : (
             <AdminDashboard allEntries={allEntries} sites={sites} tasks={tasks} rates={rates}
               onSitesChange={handleSitesChange} onTasksChange={handleTasksChange}
-              onRatesChange={handleRatesChange} onLogout={() => setView("fitter")} />
+              onRatesChange={handleRatesChange} onDeleteRecord={handleDeleteRecord}
+              onUpdateRecord={handleUpdateRecord} onLogout={() => setView("fitter")} />
           )}
         </div>
       </main>
