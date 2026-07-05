@@ -41,12 +41,43 @@ function weekEndLabel(weekKey) {
   return end.toLocaleDateString("en-GB");
 }
 
+// ---------- UK BANK HOLIDAYS (England & Wales) ----------
+// Baked-in fallback list so overtime is always correct even without internet.
+// Refreshed from GOV.UK at runtime when possible (see refreshBankHolidays).
+let BANK_HOLIDAYS = new Set([
+  // 2026 (England & Wales)
+  "2026-01-01", "2026-04-03", "2026-04-06", "2026-05-04", "2026-05-25",
+  "2026-08-31", "2026-12-25", "2026-12-28",
+  // 2027 (England & Wales)
+  "2027-01-01", "2027-03-26", "2027-03-29", "2027-05-03", "2027-05-31",
+  "2027-08-30", "2027-12-27", "2027-12-28",
+]);
+
+// Try to pull the official, always-up-to-date list from GOV.UK. Falls back silently.
+async function refreshBankHolidays() {
+  try {
+    const res = await fetch("https://www.gov.uk/bank-holidays.json");
+    if (!res.ok) return;
+    const data = await res.json();
+    const events = data?.["england-and-wales"]?.events || [];
+    if (events.length) {
+      const s = new Set(events.map(e => e.date));
+      // Merge with baked-in list so we never lose coverage
+      BANK_HOLIDAYS = new Set([...BANK_HOLIDAYS, ...s]);
+    }
+  } catch { /* offline or blocked — keep baked-in list */ }
+}
+
+function isBankHoliday(dateIso) {
+  return !!dateIso && BANK_HOLIDAYS.has(dateIso);
+}
+
 // ---------- OVERTIME ----------
 // Splits an entry's hours into normal vs overtime.
-// Overtime = all Sat/Sun hours, plus any weekday hours over 8.5 in a day.
-function splitOvertime(day, hours) {
+// Overtime = all Sat/Sun hours, all bank-holiday hours, plus weekday hours over 8.5/day.
+function splitOvertime(day, hours, dateIso) {
   const h = Number(hours) || 0;
-  if (day === "Saturday" || day === "Sunday") return { normal: 0, overtime: h };
+  if (day === "Saturday" || day === "Sunday" || isBankHoliday(dateIso)) return { normal: 0, overtime: h };
   const normal = Math.min(h, 8.5);
   return { normal, overtime: Math.max(0, h - 8.5) };
 }
@@ -59,9 +90,10 @@ function getPeriodDays(periodStartKey) {
     const d = new Date(start);
     d.setDate(d.getDate() + i);
     const dayName = d.toLocaleDateString("en-GB", { weekday: "long" });
-    const label = d.toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short" });
     const iso = d.toISOString().split("T")[0];
-    out.push({ iso, dayName, label, week: i < 7 ? 1 : 2 });
+    const bh = isBankHoliday(iso);
+    const label = d.toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short" }) + (bh ? " — Bank Holiday" : "");
+    out.push({ iso, dayName, label, week: i < 7 ? 1 : 2, bankHoliday: bh });
   }
   return out;
 }
@@ -233,6 +265,7 @@ function FitterForm({ fitterName, onLogout, onSubmit, sites, tasks, allEntries, 
   const [submitted, setSubmitted] = useState(false);
   const [error, setError] = useState("");
   const [confirmData, setConfirmData] = useState(null); // holds { record, warnings } when confirming
+  const [confirmedCorrect, setConfirmedCorrect] = useState(false);
   const fileRefs = useRef({});
 
   // Flag a restored draft once, on first load
@@ -299,7 +332,10 @@ function FitterForm({ fitterName, onLogout, onSubmit, sites, tasks, allEntries, 
     for (const e of entries) {
       if (!e.siteId) { setError("Please select a site for each entry."); return; }
       const h = parseFloat(e.hours);
-      if (!e.hours || isNaN(h) || h <= 0 || h > 24) { setError("Please enter valid hours (0–24) for each entry."); return; }
+      const dayLabel = e.day ? `${e.day}${e.date ? " (" + e.date + ")" : ""}` : "one of your days";
+      if (e.hours === "" || e.hours === undefined || e.hours === null) { setError(`You haven't entered any hours for ${dayLabel}. Add the hours, or remove that day.`); return; }
+      if (isNaN(h) || h <= 0) { setError(`Hours for ${dayLabel} must be a number greater than 0.`); return; }
+      if (h > 24) { setError(`Hours for ${dayLabel} can't be more than 24 in a day.`); return; }
       if (e.tasks.length === 0) { setError("Please select at least one task for each entry."); return; }
       for (const exp of (e.expenses || [])) {
         if (!exp.description.trim()) { setError("Please add a description for each expense."); return; }
@@ -311,7 +347,7 @@ function FitterForm({ fitterName, onLogout, onSubmit, sites, tasks, allEntries, 
 
     const builtEntries = entries.map(e => {
       const h = parseFloat(e.hours);
-      const ot = splitOvertime(e.day, h);
+      const ot = splitOvertime(e.day, h, e.date);
       return {
         date: e.date,
         day: e.day,
@@ -348,7 +384,7 @@ function FitterForm({ fitterName, onLogout, onSubmit, sites, tasks, allEntries, 
     // Overtime notice (so they know it'll be paid at the higher rate)
     builtEntries.forEach(ne => {
       if (ne.overtimeHours > 0) {
-        const why = (ne.day === "Saturday" || ne.day === "Sunday") ? "weekend" : "over 8.5 hrs";
+        const why = isBankHoliday(ne.date) ? "bank holiday" : (ne.day === "Saturday" || ne.day === "Sunday") ? "weekend" : "over 8.5 hrs";
         warnings.push(`${ne.day}: ${ne.overtimeHours} hr(s) counted as overtime (${why}).`);
       }
     });
@@ -378,6 +414,7 @@ function FitterForm({ fitterName, onLogout, onSubmit, sites, tasks, allEntries, 
       entries: builtEntries
     };
     setConfirmData({ record, warnings: [...new Set(warnings)] });
+    setConfirmedCorrect(false);
   };
 
   const confirmSubmit = async () => {
@@ -385,6 +422,7 @@ function FitterForm({ fitterName, onLogout, onSubmit, sites, tasks, allEntries, 
     clearDraft();
     setRestoredDraft(false);
     setConfirmData(null);
+    setConfirmedCorrect(false);
     setSubmitted(true);
   };
 
@@ -450,10 +488,16 @@ function FitterForm({ fitterName, onLogout, onSubmit, sites, tasks, allEntries, 
           </div>
         </div>
 
+        <label style={{ display: "flex", alignItems: "flex-start", gap: 10, padding: "12px 14px", border: `1px solid ${confirmedCorrect ? "#5a9" : "#e0dbd4"}`, borderRadius: 10, marginBottom: 14, cursor: "pointer", background: confirmedCorrect ? "#f2f9f5" : "#fff" }}>
+          <input type="checkbox" checked={confirmedCorrect} onChange={e => setConfirmedCorrect(e.target.checked)} style={{ width: 20, height: 20, marginTop: 1, flex: "0 0 auto", accentColor: "#1a1a1a", cursor: "pointer" }} />
+          <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 12, color: "#444", lineHeight: 1.5 }}>I confirm these hours are correct and match the days I actually worked.</span>
+        </label>
+
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-          <button onClick={() => setConfirmData(null)} style={{ fontFamily: "'DM Mono', monospace", fontSize: 13, background: "none", border: "1px solid #e0dbd4", borderRadius: 8, padding: "12px", cursor: "pointer", color: "#888" }}>Go back &amp; edit</button>
-          <button onClick={confirmSubmit} style={{ ...btnStyle, marginTop: 0 }}>Confirm &amp; submit</button>
+          <button onClick={() => { setConfirmData(null); setConfirmedCorrect(false); }} style={{ fontFamily: "'DM Mono', monospace", fontSize: 13, background: "none", border: "1px solid #e0dbd4", borderRadius: 8, padding: "12px", cursor: "pointer", color: "#888" }}>Go back &amp; edit</button>
+          <button onClick={confirmSubmit} disabled={!confirmedCorrect} style={{ ...btnStyle, marginTop: 0, opacity: confirmedCorrect ? 1 : 0.4, cursor: confirmedCorrect ? "pointer" : "not-allowed" }}>Confirm &amp; submit</button>
         </div>
+        {!confirmedCorrect && <p style={{ fontFamily: "'DM Mono', monospace", fontSize: 11, color: "#bbb", textAlign: "center", marginTop: 8 }}>Tick the box above to submit.</p>}
       </div>
     );
   }
@@ -651,7 +695,7 @@ function MyPaySummary({ fitterName, allEntries, sites, rates }) {
   const bySite = {};
   mine.forEach(en => {
     let nh = en.normalHours, oh = en.overtimeHours;
-    if (nh === undefined || oh === undefined) { const s = splitOvertime(en.day, en.hours || 0); nh = s.normal; oh = s.overtime; }
+    if (nh === undefined || oh === undefined) { const s = splitOvertime(en.day, en.hours || 0, en.date); nh = s.normal; oh = s.overtime; }
     if (!bySite[en.siteName]) bySite[en.siteName] = { site: en.siteName, normalHours: 0, overtimeHours: 0 };
     bySite[en.siteName].normalHours += (nh || 0);
     bySite[en.siteName].overtimeHours += (oh || 0);
@@ -1057,7 +1101,7 @@ function InvoicesTab({ allEntries, rates, lockedWeeks, onToggleLock }) {
       // Use stored split if present, else derive from day (back-compat with old entries)
       let nh = en.normalHours, oh = en.overtimeHours;
       if (nh === undefined || oh === undefined) {
-        const s = splitOvertime(en.day, en.hours || 0); nh = s.normal; oh = s.overtime;
+        const s = splitOvertime(en.day, en.hours || 0, en.date); nh = s.normal; oh = s.overtime;
       }
       fitterSiteTotals[key].normalHours += (nh || 0);
       fitterSiteTotals[key].overtimeHours += (oh || 0);
@@ -1643,7 +1687,7 @@ function EditSubmission({ record, sites, tasks, onSave, onCancel }) {
       entries: entries.map(e => {
         const s = site(e.siteId);
         const h = parseFloat(e.hours);
-        const ot = splitOvertime(e.day, h);
+        const ot = splitOvertime(e.day, h, e.date);
         return {
           date: e.date,
           day: e.day,
@@ -1864,6 +1908,7 @@ export default function App() {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
+    refreshBankHolidays(); // update UK bank-holiday dates from GOV.UK (falls back silently)
     Promise.all([
       load("finefit_entries"), loadStr("finefit_fitter_name"),
       load("finefit_sites"), load("finefit_tasks"), load("finefit_rates"),
