@@ -473,6 +473,22 @@ function FitterForm({ fitterName, onLogout, onSubmit, sites, tasks, allEntries, 
         <div style={{ fontFamily: "'Playfair Display', serif", fontSize: 17, color: "#C8A96E", fontWeight: 600 }}>{getCurrentWeekLabel()}</div>
       </div>
 
+      {/* Period-closing reminder */}
+      {(() => {
+        const start = getPeriodStart();
+        const end = new Date(start); end.setDate(end.getDate() + 13); end.setHours(23, 59, 59, 999);
+        const today = new Date();
+        const daysLeft = Math.ceil((end - today) / (24 * 60 * 60 * 1000));
+        if (daysLeft > 3 || daysLeft < 0) return null;
+        const msg = daysLeft === 0 ? "This fortnight closes today — please get all your hours in." : daysLeft === 1 ? "This fortnight closes tomorrow — please get your hours in." : `This fortnight closes in ${daysLeft} days — don't leave your hours to the last minute.`;
+        return (
+          <div style={{ background: "#fdf0e8", border: "1px solid #e08a5a", borderRadius: 10, padding: "10px 14px", marginBottom: 16, display: "flex", alignItems: "center", gap: 8 }}>
+            <span style={{ fontSize: 16 }}>⏰</span>
+            <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 12, color: "#b5561f" }}>{msg}</span>
+          </div>
+        );
+      })()}
+
       {/* Unsaved hours nudge */}
       {restoredDraft && (
         <div style={{ background: "#fff8e8", border: "1px solid #f39c12", borderRadius: 10, padding: "10px 14px", marginBottom: 16, display: "flex", alignItems: "center", gap: 8 }}>
@@ -836,7 +852,7 @@ function AdminDashboard({ allEntries, sites, tasks, rates, lockedWeeks, fittersL
           }}>{label}</button>
         ))}
       </div>
-      {tab === "submissions" && <SubmissionsTab allEntries={allEntries} sites={sites} tasks={tasks} lockedWeeks={lockedWeeks} onDeleteRecord={onDeleteRecord} onUpdateRecord={onUpdateRecord} />}
+      {tab === "submissions" && <SubmissionsTab allEntries={allEntries} sites={sites} tasks={tasks} lockedWeeks={lockedWeeks} fittersList={fittersList} onDeleteRecord={onDeleteRecord} onUpdateRecord={onUpdateRecord} />}
       {tab === "report" && <InvoicesTab allEntries={allEntries} rates={rates} lockedWeeks={lockedWeeks} onToggleLock={onToggleLock} />}
       {tab === "rates" && <RatesTab allEntries={allEntries} rates={rates} onRatesChange={onRatesChange} />}
       {tab === "fitters" && <FittersTab fittersList={fittersList} allEntries={allEntries} pins={pins} onFittersChange={onFittersChange} onResetPin={onResetPin} />}
@@ -1433,7 +1449,7 @@ function InvoicesTab({ allEntries, rates, lockedWeeks, onToggleLock }) {
 }
 
 // ---------- SUBMISSIONS TAB ----------
-function SubmissionsTab({ allEntries, sites, tasks, lockedWeeks, onDeleteRecord, onUpdateRecord }) {
+function SubmissionsTab({ allEntries, sites, tasks, lockedWeeks, fittersList, onDeleteRecord, onUpdateRecord }) {
   const [filterWeek, setFilterWeek] = useState("all");
   const [filterFitter, setFilterFitter] = useState("all");
   const [filterClient, setFilterClient] = useState("all");
@@ -1443,6 +1459,13 @@ function SubmissionsTab({ allEntries, sites, tasks, lockedWeeks, onDeleteRecord,
   const weeks = [...new Set(allEntries.map(e => e.weekKey))].sort().reverse();
   const fitters = [...new Set(allEntries.map(e => e.fitter))].sort();
   const clients = [...new Set(allEntries.flatMap(e => e.entries.map(en => en.client)).filter(Boolean))].sort();
+
+  // Who's submitted vs outstanding for the CURRENT fortnight
+  const thisPeriod = getWeekKey();
+  const submittedThisPeriod = [...new Set(allEntries.filter(r => r.weekKey === thisPeriod).map(r => r.fitter))];
+  const roster = [...(fittersList || [])];
+  const outstanding = roster.filter(f => !submittedThisPeriod.includes(f)).sort((a, b) => a.localeCompare(b));
+  const periodHours = allEntries.filter(r => r.weekKey === thisPeriod).flatMap(r => r.entries).reduce((a, e) => a + (e.hours || 0), 0);
 
   const filtered = allEntries.filter(record => {
     if (filterWeek !== "all" && record.weekKey !== filterWeek) return false;
@@ -1455,6 +1478,29 @@ function SubmissionsTab({ allEntries, sites, tasks, lockedWeeks, onDeleteRecord,
 
   return (
     <div>
+      {/* Current period status */}
+      {roster.length > 0 && (
+        <div style={{ border: "1px solid #e8e4de", borderRadius: 10, padding: 14, marginBottom: 16, background: "#faf9f7" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+            <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 11, color: "#888", textTransform: "uppercase", letterSpacing: "0.08em" }}>This fortnight</span>
+            <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 11, color: "#888" }}>{getCurrentWeekLabel()}</span>
+          </div>
+          <div style={{ display: "flex", gap: 18, flexWrap: "wrap", marginBottom: outstanding.length ? 10 : 0 }}>
+            <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 13, color: "#1a1a1a" }}><strong style={{ color: "#5a9" }}>{submittedThisPeriod.length}</strong> of {roster.length} submitted</span>
+            <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 13, color: "#1a1a1a" }}><strong style={{ color: "#C8A96E" }}>{periodHours.toFixed(1)}</strong> hrs so far</span>
+          </div>
+          {outstanding.length > 0 && (
+            <div>
+              <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 11, color: "#b5561f" }}>Still waiting on: </span>
+              <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 11, color: "#b5561f", fontWeight: 700 }}>{outstanding.join(", ")}</span>
+            </div>
+          )}
+          {outstanding.length === 0 && (
+            <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 11, color: "#5a9" }}>✓ Everyone's in for this fortnight.</span>
+          )}
+        </div>
+      )}
+
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8, marginBottom: 16 }}>
         <select value={filterWeek} onChange={e => setFilterWeek(e.target.value)} style={selectStyle}>
           <option value="all">All weeks</option>
