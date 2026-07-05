@@ -11,31 +11,70 @@ const DEVICE_ID = (() => {
 const DAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
 const DAYS_ORDER = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
 
-function getWeekStart(date = new Date()) {
+// ---------- FORTNIGHTLY PERIODS ----------
+// Cycles are two weeks (Mon–Sun x2), anchored to Monday 6 July 2026.
+const FORTNIGHT_ANCHOR = new Date(2026, 6, 6); // months are 0-indexed: 6 = July
+FORTNIGHT_ANCHOR.setHours(0, 0, 0, 0);
+const FORTNIGHT_MS = 14 * 24 * 60 * 60 * 1000;
+
+function getPeriodStart(date = new Date()) {
   const d = new Date(date);
-  const day = d.getDay();
-  const diff = d.getDate() - day + (day === 0 ? -6 : 1);
-  d.setDate(diff);
   d.setHours(0, 0, 0, 0);
-  return d;
+  const diff = d.getTime() - FORTNIGHT_ANCHOR.getTime();
+  const periods = Math.floor(diff / FORTNIGHT_MS);
+  return new Date(FORTNIGHT_ANCHOR.getTime() + periods * FORTNIGHT_MS);
 }
 function formatDate(date) {
   return date.toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" });
 }
+// Backwards-compatible names (now return fortnight periods)
+function getWeekStart(date = new Date()) { return getPeriodStart(date); }
 function getCurrentWeekLabel() {
-  const start = getWeekStart();
+  const start = getPeriodStart();
   const end = new Date(start);
-  end.setDate(end.getDate() + 6);
+  end.setDate(end.getDate() + 13);
   return `${formatDate(start)} – ${formatDate(end)}`;
 }
-function getWeekKey() { return getWeekStart().toISOString().split("T")[0]; }
+function getWeekKey() { return getPeriodStart().toISOString().split("T")[0]; }
 function toGBP(n) { return "£" + Number(n).toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ","); }
 function weekEndLabel(weekKey) {
   if (!weekKey || weekKey === "all") return "";
   const start = new Date(weekKey);
   const end = new Date(start);
-  end.setDate(end.getDate() + 6);
+  end.setDate(end.getDate() + 13);
   return end.toLocaleDateString("en-GB");
+}
+function periodLabelFromKey(weekKey) {
+  if (!weekKey || weekKey === "all") return weekKey;
+  const start = new Date(weekKey);
+  const end = new Date(start);
+  end.setDate(end.getDate() + 13);
+  return `${formatDate(start)} – ${formatDate(end)}`;
+}
+
+// ---------- OVERTIME ----------
+// Splits an entry's hours into normal vs overtime.
+// Overtime = all Sat/Sun hours, plus any weekday hours over 8.5 in a day.
+function splitOvertime(day, hours) {
+  const h = Number(hours) || 0;
+  if (day === "Saturday" || day === "Sunday") return { normal: 0, overtime: h };
+  const normal = Math.min(h, 8.5);
+  return { normal, overtime: Math.max(0, h - 8.5) };
+}
+
+// The 14 dates of a fortnight, each with its weekday name and a short label
+function getPeriodDays(periodStartKey) {
+  const start = periodStartKey ? new Date(periodStartKey) : getPeriodStart();
+  const out = [];
+  for (let i = 0; i < 14; i++) {
+    const d = new Date(start);
+    d.setDate(d.getDate() + i);
+    const dayName = d.toLocaleDateString("en-GB", { weekday: "long" });
+    const label = d.toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short" });
+    const iso = d.toISOString().split("T")[0];
+    out.push({ iso, dayName, label, week: i < 7 ? 1 : 2 });
+  }
+  return out;
 }
 
 // ---------- STORAGE (Firebase) ----------
@@ -82,13 +121,40 @@ function Logo() {
 }
 
 // ---------- FITTER LOGIN ----------
-function FitterLogin({ fittersList, onLogin }) {
+// Hash a PIN (salted with the fitter's name) using the browser's crypto.
+async function hashPin(name, pin) {
+  const data = new TextEncoder().encode(`finefit:${name}:${pin}`);
+  const buf = await crypto.subtle.digest("SHA-256", data);
+  return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, "0")).join("");
+}
+
+function FitterLogin({ fittersList, pins, onSetPin, onLogin }) {
   const [name, setName] = useState("");
   const [error, setError] = useState("");
+  const [step, setStep] = useState("name"); // "name" | "setPin" | "enterPin"
+  const [pin, setPin] = useState("");
+  const [pin2, setPin2] = useState("");
   const sorted = [...(fittersList || [])].sort((a, b) => a.localeCompare(b));
 
-  const handle = async () => {
+  const chooseName = () => {
     if (!name) { setError("Please select your name."); return; }
+    setError("");
+    // If this fitter already has a PIN, ask for it; otherwise set one up.
+    if (pins && pins[name]) setStep("enterPin");
+    else setStep("setPin");
+  };
+
+  const doSetPin = async () => {
+    if (!/^\d{4}$/.test(pin)) { setError("Choose a 4-digit PIN (numbers only)."); return; }
+    if (pin !== pin2) { setError("The two PINs don't match — try again."); return; }
+    const h = await hashPin(name, pin);
+    await onSetPin(name, h);
+    await onLogin(name);
+  };
+
+  const doEnterPin = async () => {
+    const h = await hashPin(name, pin);
+    if (h !== pins[name]) { setError("That PIN isn't right. Try again, or ask Tom to reset it."); setPin(""); return; }
     await onLogin(name);
   };
 
@@ -104,26 +170,61 @@ function FitterLogin({ fittersList, onLogin }) {
     );
   }
 
+  // Step 2a: first-time PIN setup
+  if (step === "setPin") {
+    return (
+      <div>
+        <button onClick={() => { setStep("name"); setPin(""); setPin2(""); setError(""); }} style={{ background: "none", border: "none", color: "#aaa", fontFamily: "'DM Mono', monospace", fontSize: 12, cursor: "pointer", padding: 0, marginBottom: 16 }}>← Back</button>
+        <h2 style={{ fontFamily: "'Playfair Display', serif", fontSize: 22, marginBottom: 6, color: "#1a1a1a" }}>Set your PIN, {name}</h2>
+        <p style={{ fontFamily: "'DM Mono', monospace", fontSize: 12, color: "#888", marginBottom: 24 }}>Choose a 4-digit PIN. You'll use it each time you log in on a new phone. It keeps your hours and pay private.</p>
+        <label style={labelStyle}>Choose a 4-digit PIN</label>
+        <input value={pin} onChange={e => { setPin(e.target.value.replace(/\D/g, "").slice(0, 4)); setError(""); }} type="tel" inputMode="numeric" placeholder="••••" style={{ ...inputStyle, letterSpacing: "0.4em", fontSize: 20 }} autoFocus />
+        <label style={{ ...labelStyle, marginTop: 14 }}>Type it again</label>
+        <input value={pin2} onChange={e => { setPin2(e.target.value.replace(/\D/g, "").slice(0, 4)); setError(""); }} type="tel" inputMode="numeric" placeholder="••••" style={{ ...inputStyle, letterSpacing: "0.4em", fontSize: 20 }} onKeyDown={e => e.key === "Enter" && doSetPin()} />
+        {error && <p style={{ color: "#c0392b", fontFamily: "'DM Mono', monospace", fontSize: 12, marginTop: 8 }}>{error}</p>}
+        <button onClick={doSetPin} style={{ ...btnStyle, marginTop: 20, width: "100%" }}>Save PIN &amp; Continue</button>
+      </div>
+    );
+  }
+
+  // Step 2b: returning fitter enters PIN
+  if (step === "enterPin") {
+    return (
+      <div>
+        <button onClick={() => { setStep("name"); setPin(""); setError(""); }} style={{ background: "none", border: "none", color: "#aaa", fontFamily: "'DM Mono', monospace", fontSize: 12, cursor: "pointer", padding: 0, marginBottom: 16 }}>← Back</button>
+        <h2 style={{ fontFamily: "'Playfair Display', serif", fontSize: 22, marginBottom: 6, color: "#1a1a1a" }}>Hi, {name}</h2>
+        <p style={{ fontFamily: "'DM Mono', monospace", fontSize: 12, color: "#888", marginBottom: 24 }}>Enter your 4-digit PIN to log in.</p>
+        <label style={labelStyle}>Your PIN</label>
+        <input value={pin} onChange={e => { setPin(e.target.value.replace(/\D/g, "").slice(0, 4)); setError(""); }} type="tel" inputMode="numeric" placeholder="••••" style={{ ...inputStyle, letterSpacing: "0.4em", fontSize: 20 }} autoFocus onKeyDown={e => e.key === "Enter" && doEnterPin()} />
+        {error && <p style={{ color: "#c0392b", fontFamily: "'DM Mono', monospace", fontSize: 12, marginTop: 8 }}>{error}</p>}
+        <button onClick={doEnterPin} style={{ ...btnStyle, marginTop: 20, width: "100%" }}>Log In</button>
+        <p style={{ fontFamily: "'DM Mono', monospace", fontSize: 11, color: "#bbb", marginTop: 16, textAlign: "center" }}>Forgotten it? Ask Tom to reset your PIN.</p>
+      </div>
+    );
+  }
+
+  // Step 1: pick name
   return (
     <div>
       <h2 style={{ fontFamily: "'Playfair Display', serif", fontSize: 24, marginBottom: 6, color: "#1a1a1a" }}>Welcome</h2>
-      <p style={{ fontFamily: "'DM Mono', monospace", fontSize: 12, color: "#888", marginBottom: 28 }}>Select your name from the list to get started. We'll remember you on this device.</p>
+      <p style={{ fontFamily: "'DM Mono', monospace", fontSize: 12, color: "#888", marginBottom: 28 }}>Select your name to get started. You'll set or enter a personal PIN next.</p>
       <label style={labelStyle}>Your Name</label>
       <select value={name} onChange={e => { setName(e.target.value); setError(""); }}
         style={{ ...selectStyle, borderColor: error ? "#c0392b" : undefined }} autoFocus>
         <option value="">— Select your name —</option>
-        {sorted.map(f => <option key={f} value={f}>{f}</option>)}
+        {sorted.map(f => <option key={f} value={f}>{f}{pins && pins[f] ? "" : "  (new)"}</option>)}
       </select>
       {error && <p style={{ color: "#c0392b", fontFamily: "'DM Mono', monospace", fontSize: 12, marginTop: 8 }}>{error}</p>}
-      <button onClick={handle} style={{ ...btnStyle, marginTop: 20, width: "100%" }}>Continue</button>
+      <button onClick={chooseName} style={{ ...btnStyle, marginTop: 20, width: "100%" }}>Continue</button>
       <p style={{ fontFamily: "'DM Mono', monospace", fontSize: 11, color: "#bbb", marginTop: 16, textAlign: "center" }}>Name not listed? Ask Tom to add you.</p>
     </div>
   );
 }
 
 // ---------- FITTER FORM ----------
-function FitterForm({ fitterName, onLogout, onSubmit, sites, tasks, allEntries, lockedWeeks, onDeleteRecord, onUpdateRecord }) {
-  const emptyEntry = () => ({ day: "Monday", siteId: "", hours: "", tasks: [], expenses: [] });
+function FitterForm({ fitterName, onLogout, onSubmit, sites, tasks, allEntries, lockedWeeks, rates, onDeleteRecord, onUpdateRecord }) {
+  const periodDays = getPeriodDays();
+  const emptyEntry = () => ({ date: periodDays[0].iso, day: periodDays[0].dayName, siteId: "", hours: "", tasks: [], expenses: [] });
   const emptyExpense = () => ({ description: "", amount: "", receipt: null });
   const draftKey = `finefit_draft_${fitterName}`;
 
@@ -220,34 +321,49 @@ function FitterForm({ fitterName, onLogout, onSubmit, sites, tasks, allEntries, 
     const site = (id) => sites.find(s => s.id === id);
     const taskLabel = (id) => tasks.find(t => t.id === id)?.name || id;
 
-    const builtEntries = entries.map(e => ({
-      day: e.day,
-      siteId: e.siteId,
-      siteName: site(e.siteId)?.name || e.siteId,
-      client: site(e.siteId)?.client || "",
-      hours: parseFloat(e.hours),
-      tasks: e.tasks.map(id => ({ id, label: taskLabel(id) })),
-      expenses: (e.expenses || []).map(exp => ({ description: exp.description.trim(), amount: parseFloat(exp.amount), receipt: exp.receipt || null }))
-    }));
+    const builtEntries = entries.map(e => {
+      const h = parseFloat(e.hours);
+      const ot = splitOvertime(e.day, h);
+      return {
+        date: e.date,
+        day: e.day,
+        siteId: e.siteId,
+        siteName: site(e.siteId)?.name || e.siteId,
+        client: site(e.siteId)?.client || "",
+        hours: h,
+        normalHours: ot.normal,
+        overtimeHours: ot.overtime,
+        tasks: e.tasks.map(id => ({ id, label: taskLabel(id) })),
+        expenses: (e.expenses || []).map(exp => ({ description: exp.description.trim(), amount: parseFloat(exp.amount), receipt: exp.receipt || null }))
+      };
+    });
 
     // ---- Soft warnings ----
     const warnings = [];
 
-    // Duplicate day+site already submitted this week
+    // Duplicate date+site already submitted this fortnight
     alreadyThisWeek.forEach(prev => {
       builtEntries.forEach(ne => {
-        if (prev.day === ne.day && prev.siteName === ne.siteName) {
-          warnings.push(`You already submitted ${ne.day} at ${ne.siteName} this week — this would be a second entry.`);
+        if (prev.date === ne.date && prev.siteName === ne.siteName) {
+          warnings.push(`You already submitted ${ne.day} (${ne.date}) at ${ne.siteName} this fortnight — this would be a second entry.`);
         }
       });
     });
 
-    // Duplicate day+site within this same form
+    // Duplicate date+site within this same form
     builtEntries.forEach((a, ai) => builtEntries.forEach((b, bi) => {
-      if (ai < bi && a.day === b.day && a.siteId === b.siteId) {
-        warnings.push(`You've entered ${a.day} at ${a.siteName} twice in this submission.`);
+      if (ai < bi && a.date === b.date && a.siteId === b.siteId) {
+        warnings.push(`You've entered ${a.day} (${a.date}) at ${a.siteName} twice in this submission.`);
       }
     }));
+
+    // Overtime notice (so they know it'll be paid at the higher rate)
+    builtEntries.forEach(ne => {
+      if (ne.overtimeHours > 0) {
+        const why = (ne.day === "Saturday" || ne.day === "Sunday") ? "weekend" : "over 8.5 hrs";
+        warnings.push(`${ne.day}: ${ne.overtimeHours} hr(s) counted as overtime (${why}).`);
+      }
+    });
 
     // High single-day hours
     builtEntries.forEach(ne => {
@@ -255,7 +371,7 @@ function FitterForm({ fitterName, onLogout, onSubmit, sites, tasks, allEntries, 
     });
 
     // High weekly total
-    if (runningTotal > 60) warnings.push(`Your total for the week would be ${runningTotal.toFixed(1)} hours — please check that's correct.`);
+    if (runningTotal > 120) warnings.push(`Your total for the fortnight would be ${runningTotal.toFixed(1)} hours — please check that's correct.`);
 
     // Expense without a receipt attached
     builtEntries.forEach(ne => {
@@ -384,8 +500,18 @@ function FitterForm({ fitterName, onLogout, onSubmit, sites, tasks, allEntries, 
           return (
             <div key={i} style={{ border: "1px solid #e8e4de", borderRadius: 10, overflow: "hidden" }}>
               <div style={{ background: "#f5f2ed", padding: "10px 14px", display: "flex", alignItems: "center", gap: 8, borderBottom: "1px solid #e8e4de" }}>
-                <select value={entry.day} onChange={e => updateEntry(i, "day", e.target.value)} style={{ ...selectStyle, flex: "0 0 130px" }}>
-                  {DAYS.map(d => <option key={d}>{d}</option>)}
+                <select value={entry.date} onChange={e => {
+                  const picked = periodDays.find(d => d.iso === e.target.value);
+                  const updated = [...entries];
+                  updated[i] = { ...updated[i], date: picked.iso, day: picked.dayName };
+                  setEntries(updated);
+                }} style={{ ...selectStyle, flex: "1 1 auto" }}>
+                  <optgroup label="Week 1">
+                    {periodDays.filter(d => d.week === 1).map(d => <option key={d.iso} value={d.iso}>{d.label}</option>)}
+                  </optgroup>
+                  <optgroup label="Week 2">
+                    {periodDays.filter(d => d.week === 2).map(d => <option key={d.iso} value={d.iso}>{d.label}</option>)}
+                  </optgroup>
                 </select>
                 <div style={{ flex: 1 }} />
                 {entries.length > 1 && (
@@ -481,7 +607,7 @@ function FitterForm({ fitterName, onLogout, onSubmit, sites, tasks, allEntries, 
 
       {/* Running weekly total */}
       <div style={{ marginTop: 20, display: "flex", justifyContent: "space-between", alignItems: "center", background: "#faf6ef", border: "1px solid #e8e4de", borderRadius: 8, padding: "10px 14px" }}>
-        <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 11, color: "#888", textTransform: "uppercase", letterSpacing: "0.08em" }}>This week so far</span>
+        <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 11, color: "#888", textTransform: "uppercase", letterSpacing: "0.08em" }}>This fortnight so far</span>
         <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 15, color: "#C8A96E", fontWeight: 700 }}>{runningTotal.toFixed(1)} hrs</span>
       </div>
       {submittedHours > 0 && (
@@ -493,6 +619,8 @@ function FitterForm({ fitterName, onLogout, onSubmit, sites, tasks, allEntries, 
       {error && <p style={{ color: "#c0392b", fontFamily: "'DM Mono', monospace", fontSize: 12, marginTop: 16 }}>{error}</p>}
       <button onClick={buildAndConfirm} style={{ ...btnStyle, marginTop: 16, width: "100%" }}>Review & Submit</button>
 
+      <MyPaySummary fitterName={fitterName} allEntries={allEntries || []} sites={sites} rates={rates || {}} />
+
       <MyWeekSubmissions
         fitterName={fitterName}
         allEntries={allEntries || []}
@@ -502,6 +630,75 @@ function FitterForm({ fitterName, onLogout, onSubmit, sites, tasks, allEntries, 
         onDeleteRecord={onDeleteRecord}
         onUpdateRecord={onUpdateRecord}
       />
+    </div>
+  );
+}
+
+// ---------- MY PAY (private to the logged-in fitter) ----------
+function MyPaySummary({ fitterName, allEntries, sites, rates }) {
+  const [show, setShow] = useState(false);
+  const thisPeriod = getWeekKey();
+  const siteMult = (siteName) => { const s = sites.find(x => x.name === siteName); return s?.otMultiplier ?? 1.5; };
+
+  // This fitter's entries for the current fortnight, grouped by site
+  const mine = allEntries.filter(r => r.fitter === fitterName && r.weekKey === thisPeriod).flatMap(r => r.entries);
+  if (mine.length === 0) return null;
+
+  const bySite = {};
+  mine.forEach(en => {
+    let nh = en.normalHours, oh = en.overtimeHours;
+    if (nh === undefined || oh === undefined) { const s = splitOvertime(en.day, en.hours || 0); nh = s.normal; oh = s.overtime; }
+    if (!bySite[en.siteName]) bySite[en.siteName] = { site: en.siteName, normalHours: 0, overtimeHours: 0 };
+    bySite[en.siteName].normalHours += (nh || 0);
+    bySite[en.siteName].overtimeHours += (oh || 0);
+  });
+
+  let anyRate = false;
+  const rows = Object.values(bySite).map(s => {
+    const rk = `${fitterName}|||${s.site}`;
+    const rate = parseFloat(rates[rk]?.fitter) || 0;
+    if (rate > 0) anyRate = true;
+    const mult = siteMult(s.site);
+    const pay = s.normalHours * rate + s.overtimeHours * rate * mult;
+    return { ...s, rate, mult, pay };
+  });
+  const totalPay = rows.reduce((a, r) => a + r.pay, 0);
+  const totalHours = rows.reduce((a, r) => a + r.normalHours + r.overtimeHours, 0);
+
+  return (
+    <div style={{ marginTop: 28 }}>
+      <button onClick={() => setShow(s => !s)} style={{ width: "100%", fontFamily: "'DM Mono', monospace", fontSize: 12, background: "#1a1a1a", border: "none", borderRadius: 8, padding: "12px 14px", cursor: "pointer", color: "#fff", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+        <span>{show ? "▲ Hide" : "▼ Show"} my pay this fortnight</span>
+        <span style={{ color: "#C8A96E", fontWeight: 700 }}>{anyRate ? toGBP(totalPay) : `${totalHours.toFixed(1)} hrs`}</span>
+      </button>
+      {show && (
+        <div style={{ marginTop: 10, border: "1px solid #e8e4de", borderRadius: 10, overflow: "hidden" }}>
+          {!anyRate && (
+            <div style={{ padding: "10px 14px", background: "#fff8e8", borderBottom: "1px solid #f1e2c0" }}>
+              <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 11, color: "#b7860b" }}>Your pay rate hasn't been set by Tom yet — showing hours only for now.</span>
+            </div>
+          )}
+          {rows.map((r, i) => (
+            <div key={i} style={{ padding: "10px 14px", borderBottom: "1px solid #f5f2ed" }}>
+              <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 3 }}>
+                <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 12, color: "#1a1a1a" }}>{r.site}</span>
+                {anyRate && <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 12, color: "#1a1a1a", fontWeight: 700 }}>{toGBP(r.pay)}</span>}
+              </div>
+              <div style={{ fontFamily: "'DM Mono', monospace", fontSize: 11, color: "#888" }}>
+                {r.normalHours > 0 && <span>{r.normalHours.toFixed(1)} hrs normal{r.rate > 0 ? ` @ £${r.rate.toFixed(2)}` : ""}</span>}
+                {r.overtimeHours > 0 && <span>{r.normalHours > 0 ? "  ·  " : ""}<span style={{ color: "#b7860b" }}>{r.overtimeHours.toFixed(1)} hrs OT {r.mult}×{r.rate > 0 ? ` @ £${(r.rate * r.mult).toFixed(2)}` : ""}</span></span>}
+              </div>
+            </div>
+          ))}
+          <div style={{ padding: "10px 14px", background: "#faf6ef", display: "flex", justifyContent: "space-between" }}>
+            <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 12, color: "#888" }}>Total ({totalHours.toFixed(1)} hrs)</span>
+            {anyRate && <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 14, color: "#C8A96E", fontWeight: 700 }}>{toGBP(totalPay)}</span>}
+          </div>
+          <div style={{ padding: "8px 14px", background: "#fff" }}>
+            <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 10, color: "#bbb" }}>Estimate based on submitted hours. Final pay is confirmed by Tom.</span>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -528,10 +725,10 @@ function MyWeekSubmissions({ fitterName, allEntries, lockedWeeks, sites, tasks, 
   return (
     <div style={{ marginTop: 32, borderTop: "1px solid #e8e4de", paddingTop: 24 }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
-        <h3 style={{ fontFamily: "'Playfair Display', serif", fontSize: 18, color: "#1a1a1a", margin: 0 }}>My submissions this week</h3>
+        <h3 style={{ fontFamily: "'Playfair Display', serif", fontSize: 18, color: "#1a1a1a", margin: 0 }}>My submissions this fortnight</h3>
       </div>
       <p style={{ fontFamily: "'DM Mono', monospace", fontSize: 11, color: "#888", marginTop: 4, marginBottom: 16 }}>
-        {mine.length === 0 ? "You haven't submitted anything this week yet." : locked ? "This week has been invoiced and can no longer be changed. Speak to Tom if something's wrong." : "You can fix or remove anything you submitted this week, until Tom invoices it."}
+        {mine.length === 0 ? "You haven't submitted anything this fortnight yet." : locked ? "This fortnight has been invoiced and can no longer be changed. Speak to Tom if something's wrong." : "You can fix or remove anything you submitted this fortnight, until Tom invoices it."}
       </p>
 
       {mine.map(record => (
@@ -633,7 +830,7 @@ function AdminLogin({ onLogin }) {
 }
 
 // ---------- ADMIN DASHBOARD ----------
-function AdminDashboard({ allEntries, sites, tasks, rates, lockedWeeks, fittersList, onSitesChange, onTasksChange, onRatesChange, onDeleteRecord, onUpdateRecord, onToggleLock, onFittersChange, onLogout }) {
+function AdminDashboard({ allEntries, sites, tasks, rates, lockedWeeks, fittersList, pins, onSitesChange, onTasksChange, onRatesChange, onDeleteRecord, onUpdateRecord, onToggleLock, onFittersChange, onResetPin, onLogout }) {
   const [tab, setTab] = useState("submissions");
   return (
     <div>
@@ -654,7 +851,7 @@ function AdminDashboard({ allEntries, sites, tasks, rates, lockedWeeks, fittersL
       {tab === "submissions" && <SubmissionsTab allEntries={allEntries} sites={sites} tasks={tasks} lockedWeeks={lockedWeeks} onDeleteRecord={onDeleteRecord} onUpdateRecord={onUpdateRecord} />}
       {tab === "report" && <InvoicesTab allEntries={allEntries} rates={rates} lockedWeeks={lockedWeeks} onToggleLock={onToggleLock} />}
       {tab === "rates" && <RatesTab allEntries={allEntries} rates={rates} onRatesChange={onRatesChange} />}
-      {tab === "fitters" && <FittersTab fittersList={fittersList} allEntries={allEntries} onFittersChange={onFittersChange} />}
+      {tab === "fitters" && <FittersTab fittersList={fittersList} allEntries={allEntries} pins={pins} onFittersChange={onFittersChange} onResetPin={onResetPin} />}
       {tab === "sites" && <SitesTab sites={sites} onSitesChange={onSitesChange} />}
       {tab === "tasks" && <TasksTab tasks={tasks} onTasksChange={onTasksChange} />}
     </div>
@@ -662,7 +859,7 @@ function AdminDashboard({ allEntries, sites, tasks, rates, lockedWeeks, fittersL
 }
 
 // ---------- FITTERS TAB ----------
-function FittersTab({ fittersList, allEntries, onFittersChange }) {
+function FittersTab({ fittersList, allEntries, pins, onFittersChange, onResetPin }) {
   const [newName, setNewName] = useState("");
   const [error, setError] = useState("");
 
@@ -716,8 +913,18 @@ function FittersTab({ fittersList, allEntries, onFittersChange }) {
         <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
           {list.map(f => (
             <div key={f} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "12px 14px", border: "1px solid #e8e4de", borderRadius: 8, background: "#fff" }}>
-              <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 13, color: "#1a1a1a" }}>{f}</span>
-              <button onClick={() => removeFitter(f)} style={{ background: "none", border: "1px solid #eee", borderRadius: 6, padding: "4px 10px", fontFamily: "'DM Mono', monospace", fontSize: 11, color: "#aaa", cursor: "pointer" }}>Remove</button>
+              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 13, color: "#1a1a1a" }}>{f}</span>
+                {pins && pins[f]
+                  ? <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 10, color: "#5a9", background: "#eef7f2", borderRadius: 5, padding: "2px 7px" }}>🔒 PIN set</span>
+                  : <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 10, color: "#b7860b", background: "#fff8e8", borderRadius: 5, padding: "2px 7px" }}>no PIN yet</span>}
+              </div>
+              <div style={{ display: "flex", gap: 8 }}>
+                {pins && pins[f] && (
+                  <button onClick={() => { if (confirm(`Reset ${f}'s PIN? They'll set a new one next time they log in.`)) onResetPin(f); }} style={{ background: "none", border: "1px solid #e0dbd4", borderRadius: 6, padding: "4px 10px", fontFamily: "'DM Mono', monospace", fontSize: 11, color: "#888", cursor: "pointer" }}>Reset PIN</button>
+                )}
+                <button onClick={() => removeFitter(f)} style={{ background: "none", border: "1px solid #eee", borderRadius: 6, padding: "4px 10px", fontFamily: "'DM Mono', monospace", fontSize: 11, color: "#aaa", cursor: "pointer" }}>Remove</button>
+              </div>
             </div>
           ))}
         </div>
@@ -832,24 +1039,40 @@ function InvoicesTab({ allEntries, rates, lockedWeeks, onToggleLock }) {
     return true;
   });
 
-  // Build aggregated fitter+site totals
+  // Build aggregated fitter+site totals, splitting normal vs overtime hours
+  const siteMult = (siteName) => {
+    const s = sites.find(x => x.name === siteName);
+    return s?.otMultiplier ?? 1.5;
+  };
   const fitterSiteTotals = {};
   filtered.forEach(record => {
     const entries = filterClient === "all" ? record.entries : record.entries.filter(en => en.client === filterClient);
     entries.forEach(en => {
       const key = `${record.fitter}|||${en.siteName}|||${en.client}`;
-      if (!fitterSiteTotals[key]) fitterSiteTotals[key] = { fitter: record.fitter, site: en.siteName, client: en.client, hours: 0, expenses: [] };
-      fitterSiteTotals[key].hours += (en.hours || 0);
+      if (!fitterSiteTotals[key]) fitterSiteTotals[key] = { fitter: record.fitter, site: en.siteName, client: en.client, normalHours: 0, overtimeHours: 0, expenses: [] };
+      // Use stored split if present, else derive from day (back-compat with old entries)
+      let nh = en.normalHours, oh = en.overtimeHours;
+      if (nh === undefined || oh === undefined) {
+        const s = splitOvertime(en.day, en.hours || 0); nh = s.normal; oh = s.overtime;
+      }
+      fitterSiteTotals[key].normalHours += (nh || 0);
+      fitterSiteTotals[key].overtimeHours += (oh || 0);
       (en.expenses || []).forEach(exp => fitterSiteTotals[key].expenses.push(exp));
     });
   });
 
-  const lines = Object.values(fitterSiteTotals).map(({ fitter, site, client, hours, expenses }) => {
+  const lines = Object.values(fitterSiteTotals).map(({ fitter, site, client, normalHours, overtimeHours, expenses }) => {
     const rateKey = `${fitter}|||${site}`;
     const clientRate = parseFloat(rates[rateKey]?.client) || 0;
     const fitterRate = parseFloat(rates[rateKey]?.fitter) || 0;
+    const mult = siteMult(site);
+    const otClientRate = clientRate * mult;
+    const otFitterRate = fitterRate * mult;
+    const hours = normalHours + overtimeHours;
     const expTotal = expenses.reduce((a, e) => a + (e.amount || 0), 0);
-    return { fitter, site, client, hours, clientRate, fitterRate, clientCost: hours * clientRate, fitterCost: hours * fitterRate, expTotal, expenses };
+    const clientCost = normalHours * clientRate + overtimeHours * otClientRate;
+    const fitterCost = normalHours * fitterRate + overtimeHours * otFitterRate;
+    return { fitter, site, client, hours, normalHours, overtimeHours, mult, clientRate, fitterRate, otClientRate, otFitterRate, clientCost, fitterCost, expTotal, expenses };
   });
 
   const clientTotal = lines.reduce((a, l) => a + l.clientCost, 0);
@@ -864,13 +1087,23 @@ function InvoicesTab({ allEntries, rates, lockedWeeks, onToggleLock }) {
 
   // Print client invoice
   const printClientInvoice = () => {
-    const rows = lines.map(l => `
+    const rows = lines.map(l => {
+      const normalRow = l.normalHours > 0 ? `
       <tr>
         <td>${l.fitter}</td><td>${l.site}</td>
-        <td style="text-align:right">${l.hours.toFixed(2)}</td>
+        <td style="text-align:right">${l.normalHours.toFixed(2)}</td>
         <td style="text-align:right">£${l.clientRate.toFixed(2)}</td>
-        <td style="text-align:right"><strong>£${l.clientCost.toFixed(2)}</strong></td>
-      </tr>`).join("");
+        <td style="text-align:right"><strong>£${(l.normalHours * l.clientRate).toFixed(2)}</strong></td>
+      </tr>` : "";
+      const otRow = l.overtimeHours > 0 ? `
+      <tr>
+        <td>${l.fitter}</td><td>${l.site} <span style="color:#888">(overtime ${l.mult}\u00D7)</span></td>
+        <td style="text-align:right">${l.overtimeHours.toFixed(2)}</td>
+        <td style="text-align:right">£${l.otClientRate.toFixed(2)}</td>
+        <td style="text-align:right"><strong>£${(l.overtimeHours * l.otClientRate).toFixed(2)}</strong></td>
+      </tr>` : "";
+      return normalRow + otRow;
+    }).join("");
     const expRows = allExpenses.length > 0 ? `
       <tr><td colspan="4" style="padding-top:8px;color:#888;font-size:12px;">Materials &amp; Expenses</td><td style="text-align:right"><strong>£${totalExpenses.toFixed(2)}</strong></td></tr>` : "";
     const html = `<!DOCTYPE html><html><head><title>Invoice ${invoiceNum}</title>
@@ -892,7 +1125,7 @@ function InvoicesTab({ allEntries, rates, lockedWeeks, onToggleLock }) {
     <p style="float:right;margin-top:-40px;font-size:20px;font-weight:bold;color:#888">TAX INVOICE</p>
     <div style="clear:both"></div>
     <div class="grid">
-      <div><div class="label">Bill To</div><strong>${contactName}</strong><br/>W/E ${we}</div>
+      <div><div class="label">Bill To</div><strong>${contactName}</strong><br/>Period ending ${we}</div>
       <div><div class="label">Invoice Date</div>${invoiceDate}<br/><div class="label" style="margin-top:8px">Invoice Number</div>${invoiceNum}</div>
       <div><div class="label">Fine Fit London</div>23 Odell Walk<br/>London SE13 7DP<br/><div class="label" style="margin-top:6px">VAT Number</div>310008672</div>
     </div>
@@ -917,16 +1150,30 @@ function InvoicesTab({ allEntries, rates, lockedWeeks, onToggleLock }) {
 
   // Print Indigo payment sheet
   const printIndigoSheet = () => {
-    const rows = lines.map((l, idx) => `
-      <tr style="background:${idx % 2 === 0 ? "#fff" : "#f9f9f9"}">
-        <td style="padding:7px 10px">${idx + 1}</td>
+    let rowNum = 0;
+    const rows = lines.map((l) => {
+      const normalRow = l.normalHours > 0 ? `
+      <tr style="background:${(++rowNum) % 2 === 0 ? "#fff" : "#f9f9f9"}">
+        <td style="padding:7px 10px">${rowNum}</td>
         <td style="padding:7px 10px"><strong>${l.fitter}</strong></td>
-        <td style="padding:7px 10px;color:#888;font-size:11px;">${l.fitterRate > 0 ? `£${l.fitterRate.toFixed(2)}/hr` : "—"}</td>
-        <td style="padding:7px 10px;text-align:right">${l.hours.toFixed(2)}</td>
+        <td style="padding:7px 10px;color:#888;font-size:11px;">normal</td>
+        <td style="padding:7px 10px;text-align:right">${l.normalHours.toFixed(2)}</td>
         <td style="padding:7px 10px;text-align:right">£${l.fitterRate.toFixed(2)}</td>
-        <td style="padding:7px 10px;text-align:right"><strong>£${l.fitterCost.toFixed(2)}</strong></td>
+        <td style="padding:7px 10px;text-align:right"><strong>£${(l.normalHours * l.fitterRate).toFixed(2)}</strong></td>
         <td style="padding:7px 10px">${l.site}</td>
-      </tr>`).join("");
+      </tr>` : "";
+      const otRow = l.overtimeHours > 0 ? `
+      <tr style="background:#fff8f0">
+        <td style="padding:7px 10px">${++rowNum}</td>
+        <td style="padding:7px 10px"><strong>${l.fitter}</strong></td>
+        <td style="padding:7px 10px;color:#b7860b;font-size:11px;">overtime ${l.mult}\u00D7</td>
+        <td style="padding:7px 10px;text-align:right">${l.overtimeHours.toFixed(2)}</td>
+        <td style="padding:7px 10px;text-align:right">£${l.otFitterRate.toFixed(2)}</td>
+        <td style="padding:7px 10px;text-align:right"><strong>£${(l.overtimeHours * l.otFitterRate).toFixed(2)}</strong></td>
+        <td style="padding:7px 10px">${l.site}</td>
+      </tr>` : "";
+      return normalRow + otRow;
+    }).join("");
     const expRows = allExpenses.length > 0 ? allExpenses.map(exp => `
       <tr style="background:#fff8f0">
         <td></td>
@@ -936,7 +1183,7 @@ function InvoicesTab({ allEntries, rates, lockedWeeks, onToggleLock }) {
         <td style="padding:6px 10px;text-align:right;font-size:11px">£${(exp.amount || 0).toFixed(2)}</td>
         <td></td>
       </tr>`).join("") : "";
-    const html = `<!DOCTYPE html><html><head><title>FineFit Payment Sheet W/E ${we}</title>
+    const html = `<!DOCTYPE html><html><head><title>FineFit Payment Sheet — Period ending ${we}</title>
     <style>body{font-family:Arial,sans-serif;margin:40px;color:#1a1a1a;font-size:13px;}
     h2{margin:0 0 4px;} .meta{color:#888;font-size:12px;margin-bottom:24px;}
     table{width:100%;border-collapse:collapse;}
@@ -947,7 +1194,7 @@ function InvoicesTab({ allEntries, rates, lockedWeeks, onToggleLock }) {
     .grand td{padding:10px;font-weight:bold;background:#1a1a1a;color:white;}
     @media print{body{margin:16px;}}</style></head><body>
     <h2>FineFit London — Fitter Payment Sheet</h2>
-    <div class="meta">NAME: FineFit London &nbsp;|&nbsp; W/E: ${we}${filterClient !== "all" ? ` &nbsp;|&nbsp; ${contactName}` : ""} &nbsp;|&nbsp; Invoice: ${invoiceNum}</div>
+    <div class="meta">NAME: FineFit London &nbsp;|&nbsp; Period ending: ${we}${filterClient !== "all" ? ` &nbsp;|&nbsp; ${contactName}` : ""} &nbsp;|&nbsp; Invoice: ${invoiceNum}</div>
     <table>
       <thead><tr><th>#</th><th>Fitter</th><th>Rate</th><th>Hours</th><th>£/hr</th><th>Gross</th><th>Site Ref</th></tr></thead>
       <tbody>
@@ -967,7 +1214,12 @@ function InvoicesTab({ allEntries, rates, lockedWeeks, onToggleLock }) {
   const downloadXeroCSV = () => {
     const headers = ["ContactName","InvoiceNumber","InvoiceDate","DueDate","Description","Quantity","UnitAmount","AccountCode","TaxType","Currency"];
     const rows = [
-      ...lines.map(l => [contactName, invoiceNum, invoiceDate, dueDate, `${l.fitter} - ${l.site}`, l.hours.toFixed(2), l.clientRate.toFixed(2), "200", "RRSINPUT", "GBP"]),
+      ...lines.flatMap(l => {
+        const out = [];
+        if (l.normalHours > 0) out.push([contactName, invoiceNum, invoiceDate, dueDate, `${l.fitter} - ${l.site}`, l.normalHours.toFixed(2), l.clientRate.toFixed(2), "200", "RRSINPUT", "GBP"]);
+        if (l.overtimeHours > 0) out.push([contactName, invoiceNum, invoiceDate, dueDate, `${l.fitter} - ${l.site} (overtime ${l.mult}x)`, l.overtimeHours.toFixed(2), l.otClientRate.toFixed(2), "200", "RRSINPUT", "GBP"]);
+        return out;
+      }),
       ...(totalExpenses > 0 ? [[contactName, invoiceNum, invoiceDate, dueDate, "Materials and Expenses", "1", totalExpenses.toFixed(2), "200", "RRSINPUT", "GBP"]] : [])
     ];
     const csv = [headers, ...rows].map(r => r.map(v => `"${String(v).replace(/"/g, '""')}"`).join(",")).join("\n");
@@ -1006,7 +1258,7 @@ function InvoicesTab({ allEntries, rates, lockedWeeks, onToggleLock }) {
       {filterWeek !== "all" && (
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", background: (lockedWeeks || []).includes(filterWeek) ? "#f0ece6" : "#faf6ef", border: "1px solid #e8e4de", borderRadius: 8, padding: "10px 14px", marginBottom: 16 }}>
           <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 12, color: (lockedWeeks || []).includes(filterWeek) ? "#999" : "#8a6d3b" }}>
-            {(lockedWeeks || []).includes(filterWeek) ? "🔒 This week is invoiced and locked. Nobody can edit it." : "Once you've generated and sent the invoice, lock this week to prevent further changes."}
+            {(lockedWeeks || []).includes(filterWeek) ? "🔒 This fortnight is invoiced and locked. Nobody can edit it." : "Once you've generated and sent the invoice, lock this fortnight to prevent further changes."}
           </span>
           <button onClick={() => onToggleLock(filterWeek)} style={{ fontFamily: "'DM Mono', monospace", fontSize: 11, background: (lockedWeeks || []).includes(filterWeek) ? "#fff" : "#1a1a1a", color: (lockedWeeks || []).includes(filterWeek) ? "#1a1a1a" : "#fff", border: (lockedWeeks || []).includes(filterWeek) ? "1px solid #ddd" : "none", borderRadius: 6, padding: "7px 14px", cursor: "pointer", whiteSpace: "nowrap", marginLeft: 12 }}>
             {(lockedWeeks || []).includes(filterWeek) ? "Unlock week" : "🔒 Lock (mark invoiced)"}
@@ -1055,15 +1307,28 @@ function InvoicesTab({ allEntries, rates, lockedWeeks, onToggleLock }) {
                   </tr>
                 </thead>
                 <tbody>
-                  {lines.map((l, i) => (
-                    <tr key={i} style={{ borderBottom: "1px solid #f5f2ed" }}>
-                      <td style={tdStyle}>{l.fitter}</td>
-                      <td style={{ ...tdStyle, color: "#888" }}>{l.site}</td>
-                      <td style={{ ...tdStyle, textAlign: "right", fontFamily: "'DM Mono', monospace" }}>{l.hours.toFixed(2)}</td>
-                      <td style={{ ...tdStyle, textAlign: "right", fontFamily: "'DM Mono', monospace" }}>{l.clientRate > 0 ? `£${l.clientRate.toFixed(2)}` : <span style={{ color: "#f39c12" }}>Set rate</span>}</td>
-                      <td style={{ ...tdStyle, textAlign: "right", fontFamily: "'DM Mono', monospace", fontWeight: 600 }}>{l.clientRate > 0 ? toGBP(l.clientCost) : "—"}</td>
-                    </tr>
-                  ))}
+                  {lines.flatMap((l, i) => {
+                    const rowsOut = [];
+                    if (l.normalHours > 0) rowsOut.push(
+                      <tr key={`${i}-n`} style={{ borderBottom: "1px solid #f5f2ed" }}>
+                        <td style={tdStyle}>{l.fitter}</td>
+                        <td style={{ ...tdStyle, color: "#888" }}>{l.site}</td>
+                        <td style={{ ...tdStyle, textAlign: "right", fontFamily: "'DM Mono', monospace" }}>{l.normalHours.toFixed(2)}</td>
+                        <td style={{ ...tdStyle, textAlign: "right", fontFamily: "'DM Mono', monospace" }}>{l.clientRate > 0 ? `£${l.clientRate.toFixed(2)}` : <span style={{ color: "#f39c12" }}>Set rate</span>}</td>
+                        <td style={{ ...tdStyle, textAlign: "right", fontFamily: "'DM Mono', monospace", fontWeight: 600 }}>{l.clientRate > 0 ? toGBP(l.normalHours * l.clientRate) : "—"}</td>
+                      </tr>
+                    );
+                    if (l.overtimeHours > 0) rowsOut.push(
+                      <tr key={`${i}-o`} style={{ borderBottom: "1px solid #f5f2ed", background: "#fffaf0" }}>
+                        <td style={tdStyle}>{l.fitter}</td>
+                        <td style={{ ...tdStyle, color: "#b7860b" }}>{l.site} · OT {l.mult}×</td>
+                        <td style={{ ...tdStyle, textAlign: "right", fontFamily: "'DM Mono', monospace" }}>{l.overtimeHours.toFixed(2)}</td>
+                        <td style={{ ...tdStyle, textAlign: "right", fontFamily: "'DM Mono', monospace" }}>{l.clientRate > 0 ? `£${l.otClientRate.toFixed(2)}` : "—"}</td>
+                        <td style={{ ...tdStyle, textAlign: "right", fontFamily: "'DM Mono', monospace", fontWeight: 600 }}>{l.clientRate > 0 ? toGBP(l.overtimeHours * l.otClientRate) : "—"}</td>
+                      </tr>
+                    );
+                    return rowsOut;
+                  })}
                   {totalExpenses > 0 && (
                     <tr style={{ borderBottom: "1px solid #f5f2ed", background: "#fafaf8" }}>
                       <td style={{ ...tdStyle, color: "#888", fontStyle: "italic" }} colSpan={2}>Materials &amp; Expenses</td>
@@ -1087,7 +1352,7 @@ function InvoicesTab({ allEntries, rates, lockedWeeks, onToggleLock }) {
               <div style={{ background: "#1a1a1a", padding: "12px 16px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                 <div>
                   <span style={{ fontFamily: "'Playfair Display', serif", fontSize: 16, color: "#fff", fontWeight: 700 }}>Indigo Payment Sheet</span>
-                  <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 11, color: "#888", marginLeft: 10 }}>W/E {we}</span>
+                  <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 11, color: "#888", marginLeft: 10 }}>Period ending {we}</span>
                 </div>
                 <div style={{ textAlign: "right" }}>
                   <div style={{ fontFamily: "'DM Mono', monospace", fontSize: 18, color: "#C8A96E", fontWeight: 700 }}>{toGBP(fitterGrandTotal)}</div>
@@ -1103,15 +1368,28 @@ function InvoicesTab({ allEntries, rates, lockedWeeks, onToggleLock }) {
                   </tr>
                 </thead>
                 <tbody>
-                  {lines.map((l, i) => (
-                    <tr key={i} style={{ borderBottom: "1px solid #f5f2ed" }}>
-                      <td style={tdStyle}>{l.fitter}</td>
-                      <td style={{ ...tdStyle, color: "#888" }}>{l.site}</td>
-                      <td style={{ ...tdStyle, textAlign: "right", fontFamily: "'DM Mono', monospace" }}>{l.hours.toFixed(2)}</td>
-                      <td style={{ ...tdStyle, textAlign: "right", fontFamily: "'DM Mono', monospace" }}>{l.fitterRate > 0 ? `£${l.fitterRate.toFixed(2)}` : <span style={{ color: "#f39c12" }}>Set rate</span>}</td>
-                      <td style={{ ...tdStyle, textAlign: "right", fontFamily: "'DM Mono', monospace", fontWeight: 600 }}>{l.fitterRate > 0 ? toGBP(l.fitterCost) : "—"}</td>
-                    </tr>
-                  ))}
+                  {lines.flatMap((l, i) => {
+                    const rowsOut = [];
+                    if (l.normalHours > 0) rowsOut.push(
+                      <tr key={`${i}-n`} style={{ borderBottom: "1px solid #f5f2ed" }}>
+                        <td style={tdStyle}>{l.fitter}</td>
+                        <td style={{ ...tdStyle, color: "#888" }}>{l.site}</td>
+                        <td style={{ ...tdStyle, textAlign: "right", fontFamily: "'DM Mono', monospace" }}>{l.normalHours.toFixed(2)}</td>
+                        <td style={{ ...tdStyle, textAlign: "right", fontFamily: "'DM Mono', monospace" }}>{l.fitterRate > 0 ? `£${l.fitterRate.toFixed(2)}` : <span style={{ color: "#f39c12" }}>Set rate</span>}</td>
+                        <td style={{ ...tdStyle, textAlign: "right", fontFamily: "'DM Mono', monospace", fontWeight: 600 }}>{l.fitterRate > 0 ? toGBP(l.normalHours * l.fitterRate) : "—"}</td>
+                      </tr>
+                    );
+                    if (l.overtimeHours > 0) rowsOut.push(
+                      <tr key={`${i}-o`} style={{ borderBottom: "1px solid #f5f2ed", background: "#fffaf0" }}>
+                        <td style={tdStyle}>{l.fitter}</td>
+                        <td style={{ ...tdStyle, color: "#b7860b" }}>{l.site} · OT {l.mult}×</td>
+                        <td style={{ ...tdStyle, textAlign: "right", fontFamily: "'DM Mono', monospace" }}>{l.overtimeHours.toFixed(2)}</td>
+                        <td style={{ ...tdStyle, textAlign: "right", fontFamily: "'DM Mono', monospace" }}>{l.fitterRate > 0 ? `£${l.otFitterRate.toFixed(2)}` : "—"}</td>
+                        <td style={{ ...tdStyle, textAlign: "right", fontFamily: "'DM Mono', monospace", fontWeight: 600 }}>{l.fitterRate > 0 ? toGBP(l.overtimeHours * l.otFitterRate) : "—"}</td>
+                      </tr>
+                    );
+                    return rowsOut;
+                  })}
                   {allExpenses.map((exp, i) => (
                     <tr key={`exp-${i}`} style={{ borderBottom: "1px solid #f5f2ed", background: "#fafaf8" }}>
                       <td style={{ ...tdStyle, color: "#888", fontStyle: "italic", fontSize: 11 }} colSpan={2}>EXPENSES: {exp.description}</td>
@@ -1330,12 +1608,17 @@ function EditSubmission({ record, sites, tasks, onSave, onCancel }) {
       ...record,
       entries: entries.map(e => {
         const s = site(e.siteId);
+        const h = parseFloat(e.hours);
+        const ot = splitOvertime(e.day, h);
         return {
+          date: e.date,
           day: e.day,
           siteId: e.siteId,
           siteName: s?.name || e.siteName || e.siteId,
           client: s?.client || e.client || "",
-          hours: parseFloat(e.hours),
+          hours: h,
+          normalHours: ot.normal,
+          overtimeHours: ot.overtime,
           tasks: e.tasks.map(id => ({ id, label: taskLabel(id) })),
           expenses: (e.expenses || []).map(x => ({ description: x.description, amount: parseFloat(x.amount) || 0, receipt: x.receipt || null }))
         };
@@ -1357,8 +1640,27 @@ function EditSubmission({ record, sites, tasks, onSave, onCancel }) {
           return (
             <div key={i} style={{ border: "1px solid #e8e4de", borderRadius: 8, padding: 12 }}>
               <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 10 }}>
-                <select value={entry.day} onChange={e => updateEntry(i, "day", e.target.value)} style={{ ...selectStyle, flex: "0 0 120px", fontSize: 12 }}>
-                  {DAYS.map(d => <option key={d}>{d}</option>)}
+                <select value={entry.date || ""} onChange={e => {
+                  const pd = getPeriodDays(record.weekKey);
+                  const picked = pd.find(d => d.iso === e.target.value);
+                  const u = [...entries];
+                  u[i] = { ...u[i], date: picked.iso, day: picked.dayName };
+                  setEntries(u);
+                }} style={{ ...selectStyle, flex: "1 1 auto", fontSize: 12 }}>
+                  {(() => {
+                    const pd = getPeriodDays(record.weekKey);
+                    // If the stored date isn't in this period (old data), show current day as fallback
+                    return (
+                      <>
+                        <optgroup label="Week 1">
+                          {pd.filter(d => d.week === 1).map(d => <option key={d.iso} value={d.iso}>{d.label}</option>)}
+                        </optgroup>
+                        <optgroup label="Week 2">
+                          {pd.filter(d => d.week === 2).map(d => <option key={d.iso} value={d.iso}>{d.label}</option>)}
+                        </optgroup>
+                      </>
+                    );
+                  })()}
                 </select>
                 <div style={{ flex: 1 }} />
                 {entries.length > 1 && (
@@ -1422,21 +1724,36 @@ function EditSubmission({ record, sites, tasks, onSave, onCancel }) {
 function SitesTab({ sites, onSitesChange }) {
   const [siteName, setSiteName] = useState("");
   const [client, setClient] = useState("");
+  const [otMult, setOtMult] = useState("1.5");
   const [error, setError] = useState("");
   const addSite = async () => {
     if (!siteName.trim()) { setError("Enter a site name."); return; }
     if (!client.trim()) { setError("Enter a client name."); return; }
-    await onSitesChange([...sites, { id: Date.now().toString(), name: siteName.trim(), client: client.trim() }]);
-    setSiteName(""); setClient(""); setError("");
+    const m = parseFloat(otMult);
+    if (isNaN(m) || m < 1) { setError("Overtime multiplier must be 1 or higher (e.g. 1.25 or 1.5)."); return; }
+    await onSitesChange([...sites, { id: Date.now().toString(), name: siteName.trim(), client: client.trim(), otMultiplier: m }]);
+    setSiteName(""); setClient(""); setOtMult("1.5"); setError("");
   };
   return (
     <div>
-      <p style={{ fontFamily: "'DM Mono', monospace", fontSize: 12, color: "#888", marginBottom: 20 }}>Add sites and link them to a client.</p>
+      <p style={{ fontFamily: "'DM Mono', monospace", fontSize: 12, color: "#888", marginBottom: 20 }}>Add sites, link them to a client, and set the overtime rate for that job.</p>
       <div style={{ background: "#f5f2ed", borderRadius: 10, padding: 16, marginBottom: 20 }}>
         <div style={{ fontFamily: "'DM Mono', monospace", fontSize: 11, color: "#888", textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: 12 }}>Add Site</div>
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 10 }}>
           <div><label style={labelStyle}>Site Name</label><input value={siteName} onChange={e => { setSiteName(e.target.value); setError(""); }} placeholder="e.g. Chelsea Barracks" style={inputStyle} /></div>
           <div><label style={labelStyle}>Client</label><input value={client} onChange={e => { setClient(e.target.value); setError(""); }} placeholder="e.g. Lanserring" style={inputStyle} /></div>
+        </div>
+        <div style={{ marginBottom: 10 }}>
+          <label style={labelStyle}>Overtime multiplier</label>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <select value={otMult} onChange={e => { setOtMult(e.target.value); setError(""); }} style={{ ...selectStyle, width: 120 }}>
+              <option value="1.25">1.25×</option>
+              <option value="1.5">1.5×</option>
+              <option value="1">None (1×)</option>
+              <option value="2">2×</option>
+            </select>
+            <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 11, color: "#aaa" }}>applied to weekend hours &amp; anything over 8.5 hrs/day</span>
+          </div>
         </div>
         {error && <p style={{ color: "#c0392b", fontFamily: "'DM Mono', monospace", fontSize: 12, marginBottom: 8 }}>{error}</p>}
         <button onClick={addSite} style={{ ...btnStyle, marginTop: 4, padding: "10px 18px" }}>+ Add Site</button>
@@ -1450,6 +1767,7 @@ function SitesTab({ sites, onSitesChange }) {
               <div>
                 <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 13, color: "#1a1a1a" }}>{s.name}</span>
                 <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 11, color: "#C8A96E", marginLeft: 10 }}>→ {s.client}</span>
+                <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 11, color: "#888", marginLeft: 10 }}>OT {s.otMultiplier ?? 1.5}×</span>
               </div>
               <button onClick={() => onSitesChange(sites.filter(x => x.id !== s.id))} style={{ background: "none", border: "1px solid #eee", borderRadius: 6, padding: "4px 10px", fontFamily: "'DM Mono', monospace", fontSize: 11, color: "#aaa", cursor: "pointer" }}>Remove</button>
             </div>
@@ -1508,14 +1826,15 @@ export default function App() {
   const [rates, setRates] = useState({});
   const [lockedWeeks, setLockedWeeks] = useState([]);
   const [fittersList, setFittersList] = useState([]);
+  const [pins, setPins] = useState({});
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     Promise.all([
       load("finefit_entries"), loadStr("finefit_fitter_name"),
       load("finefit_sites"), load("finefit_tasks"), load("finefit_rates"),
-      load("finefit_locked_weeks"), load("finefit_fitters"),
-    ]).then(([entries, name, savedSites, savedTasks, savedRates, savedLocks, savedFitters]) => {
+      load("finefit_locked_weeks"), load("finefit_fitters"), load("finefit_pins"),
+    ]).then(([entries, name, savedSites, savedTasks, savedRates, savedLocks, savedFitters, savedPins]) => {
       setAllEntries(entries || []);
       if (name) setFitterName(name);
       setSites(savedSites || []);
@@ -1523,6 +1842,7 @@ export default function App() {
       setRates(savedRates || {});
       setLockedWeeks(savedLocks || []);
       setFittersList(savedFitters || []);
+      setPins(savedPins || {});
       setLoading(false);
     });
   }, []);
@@ -1539,6 +1859,8 @@ export default function App() {
     setLockedWeeks(u); await save("finefit_locked_weeks", u);
   };
   const handleFittersChange = async (u) => { setFittersList(u); await save("finefit_fitters", u); };
+  const handleSetPin = async (name, hash) => { const u = { ...pins, [name]: hash }; setPins(u); await save("finefit_pins", u); };
+  const handleResetPin = async (name) => { const u = { ...pins }; delete u[name]; setPins(u); await save("finefit_pins", u); };
   const isFitter = view === "fitter";
 
   return (
@@ -1558,14 +1880,14 @@ export default function App() {
           ) : view === "fitter" ? (
             fitterName
               ? <FitterForm fitterName={fitterName} onLogout={handleFitterLogout} onSubmit={handleSubmit} sites={sites} tasks={tasks}
-                  allEntries={allEntries} lockedWeeks={lockedWeeks} onDeleteRecord={handleDeleteRecord} onUpdateRecord={handleUpdateRecord} />
-              : <FitterLogin fittersList={fittersList} onLogin={async (n) => { await saveStr("finefit_fitter_name", n); setFitterName(n); }} />
+                  allEntries={allEntries} lockedWeeks={lockedWeeks} rates={rates} onDeleteRecord={handleDeleteRecord} onUpdateRecord={handleUpdateRecord} />
+              : <FitterLogin fittersList={fittersList} pins={pins} onSetPin={handleSetPin} onLogin={async (n) => { await saveStr("finefit_fitter_name", n); setFitterName(n); }} />
           ) : view === "adminLogin" ? (
             <AdminLogin onLogin={() => setView("admin")} />
           ) : (
             <AdminDashboard allEntries={allEntries} sites={sites} tasks={tasks} rates={rates}
-              lockedWeeks={lockedWeeks} fittersList={fittersList} onSitesChange={handleSitesChange} onTasksChange={handleTasksChange}
-              onRatesChange={handleRatesChange} onDeleteRecord={handleDeleteRecord} onFittersChange={handleFittersChange}
+              lockedWeeks={lockedWeeks} fittersList={fittersList} pins={pins} onSitesChange={handleSitesChange} onTasksChange={handleTasksChange}
+              onRatesChange={handleRatesChange} onDeleteRecord={handleDeleteRecord} onFittersChange={handleFittersChange} onResetPin={handleResetPin}
               onUpdateRecord={handleUpdateRecord} onToggleLock={handleToggleLock} onLogout={() => setView("fitter")} />
           )}
         </div>
