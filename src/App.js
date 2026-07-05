@@ -8,8 +8,6 @@ const DEVICE_ID = (() => {
   if (!id) { id = Math.random().toString(36).slice(2); localStorage.setItem("finefit_device_id", id); }
   return id;
 })();
-const DAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
-const DAYS_ORDER = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
 
 // ---------- FORTNIGHTLY PERIODS ----------
 // Cycles are two weeks (Mon–Sun x2), anchored to Monday 6 July 2026.
@@ -27,8 +25,6 @@ function getPeriodStart(date = new Date()) {
 function formatDate(date) {
   return date.toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" });
 }
-// Backwards-compatible names (now return fortnight periods)
-function getWeekStart(date = new Date()) { return getPeriodStart(date); }
 function getCurrentWeekLabel() {
   const start = getPeriodStart();
   const end = new Date(start);
@@ -43,13 +39,6 @@ function weekEndLabel(weekKey) {
   const end = new Date(start);
   end.setDate(end.getDate() + 13);
   return end.toLocaleDateString("en-GB");
-}
-function periodLabelFromKey(weekKey) {
-  if (!weekKey || weekKey === "all") return weekKey;
-  const start = new Date(weekKey);
-  const end = new Date(start);
-  end.setDate(end.getDate() + 13);
-  return `${formatDate(start)} – ${formatDate(end)}`;
 }
 
 // ---------- OVERTIME ----------
@@ -249,7 +238,6 @@ function FitterForm({ fitterName, onLogout, onSubmit, sites, tasks, allEntries, 
   // Flag a restored draft once, on first load
   useEffect(() => {
     if (entries.some(e => e.siteId || e.hours)) setRestoredDraft(true);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Auto-save draft whenever entries change (skip once submitted)
