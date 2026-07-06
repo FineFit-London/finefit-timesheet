@@ -686,7 +686,7 @@ function FitterForm({ fitterName, onLogout, onSubmit, sites, tasks, allEntries, 
 function MyPaySummary({ fitterName, allEntries, sites, rates }) {
   const [show, setShow] = useState(false);
   const thisPeriod = getWeekKey();
-  const siteMult = (siteName) => { const s = sites.find(x => x.name === siteName); return s?.otMultiplier ?? 1.5; };
+  const siteMult = (siteName) => { const s = (sites || []).find(x => x.name === siteName); return s?.otMultiplier ?? 1.5; };
 
   // This fitter's entries for the current fortnight, grouped by site
   const mine = allEntries.filter(r => r.fitter === fitterName && r.weekKey === thisPeriod).flatMap(r => r.entries);
@@ -897,7 +897,7 @@ function AdminDashboard({ allEntries, sites, tasks, rates, lockedWeeks, fittersL
         ))}
       </div>
       {tab === "submissions" && <SubmissionsTab allEntries={allEntries} sites={sites} tasks={tasks} lockedWeeks={lockedWeeks} fittersList={fittersList} onDeleteRecord={onDeleteRecord} onUpdateRecord={onUpdateRecord} />}
-      {tab === "report" && <InvoicesTab allEntries={allEntries} rates={rates} lockedWeeks={lockedWeeks} onToggleLock={onToggleLock} />}
+      {tab === "report" && <InvoicesTab allEntries={allEntries} rates={rates} sites={sites} lockedWeeks={lockedWeeks} onToggleLock={onToggleLock} />}
       {tab === "rates" && <RatesTab allEntries={allEntries} rates={rates} fittersList={fittersList} sites={sites} onRatesChange={onRatesChange} />}
       {tab === "fitters" && <FittersTab fittersList={fittersList} allEntries={allEntries} pins={pins} onFittersChange={onFittersChange} onResetPin={onResetPin} />}
       {tab === "sites" && <SitesTab sites={sites} onSitesChange={onSitesChange} />}
@@ -1127,7 +1127,7 @@ function RatesTab({ allEntries, rates, fittersList, sites, onRatesChange }) {
 }
 
 // ---------- INVOICES TAB ----------
-function InvoicesTab({ allEntries, rates, lockedWeeks, onToggleLock }) {
+function InvoicesTab({ allEntries, rates, sites, lockedWeeks, onToggleLock }) {
   const weeks = [...new Set(allEntries.map(e => e.weekKey))].sort().reverse();
   const clients = [...new Set(allEntries.flatMap(e => e.entries.map(en => en.client)).filter(Boolean))].sort();
   const [filterWeek, setFilterWeek] = useState(weeks[0] || "all");
@@ -1145,7 +1145,7 @@ function InvoicesTab({ allEntries, rates, lockedWeeks, onToggleLock }) {
 
   // Build aggregated fitter+site totals, splitting normal vs overtime hours
   const siteMult = (siteName) => {
-    const s = sites.find(x => x.name === siteName);
+    const s = (sites || []).find(x => x.name === siteName);
     return s?.otMultiplier ?? 1.5;
   };
   const fitterSiteTotals = {};
