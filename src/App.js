@@ -878,7 +878,7 @@ function AdminLogin({ onLogin }) {
 }
 
 // ---------- ADMIN DASHBOARD ----------
-function AdminDashboard({ allEntries, sites, tasks, rates, lockedWeeks, fittersList, pins, onSitesChange, onTasksChange, onRatesChange, onDeleteRecord, onUpdateRecord, onToggleLock, onFittersChange, onResetPin, onLogout }) {
+function AdminDashboard({ allEntries, sites, tasks, rates, lockedWeeks, fittersList, pins, noIndigo, onSitesChange, onTasksChange, onRatesChange, onDeleteRecord, onUpdateRecord, onToggleLock, onFittersChange, onResetPin, onToggleIndigo, onLogout }) {
   const [tab, setTab] = useState("submissions");
   return (
     <div>
@@ -897,9 +897,9 @@ function AdminDashboard({ allEntries, sites, tasks, rates, lockedWeeks, fittersL
         ))}
       </div>
       {tab === "submissions" && <SubmissionsTab allEntries={allEntries} sites={sites} tasks={tasks} lockedWeeks={lockedWeeks} fittersList={fittersList} onDeleteRecord={onDeleteRecord} onUpdateRecord={onUpdateRecord} />}
-      {tab === "report" && <InvoicesTab allEntries={allEntries} rates={rates} sites={sites} lockedWeeks={lockedWeeks} onToggleLock={onToggleLock} />}
+      {tab === "report" && <InvoicesTab allEntries={allEntries} rates={rates} sites={sites} lockedWeeks={lockedWeeks} noIndigo={noIndigo} onToggleLock={onToggleLock} />}
       {tab === "rates" && <RatesTab allEntries={allEntries} rates={rates} fittersList={fittersList} sites={sites} onRatesChange={onRatesChange} />}
-      {tab === "fitters" && <FittersTab fittersList={fittersList} allEntries={allEntries} pins={pins} onFittersChange={onFittersChange} onResetPin={onResetPin} />}
+      {tab === "fitters" && <FittersTab fittersList={fittersList} allEntries={allEntries} pins={pins} noIndigo={noIndigo} onFittersChange={onFittersChange} onResetPin={onResetPin} onToggleIndigo={onToggleIndigo} />}
       {tab === "sites" && <SitesTab sites={sites} onSitesChange={onSitesChange} />}
       {tab === "tasks" && <TasksTab tasks={tasks} onTasksChange={onTasksChange} />}
     </div>
@@ -907,7 +907,7 @@ function AdminDashboard({ allEntries, sites, tasks, rates, lockedWeeks, fittersL
 }
 
 // ---------- FITTERS TAB ----------
-function FittersTab({ fittersList, allEntries, pins, onFittersChange, onResetPin }) {
+function FittersTab({ fittersList, allEntries, pins, noIndigo, onFittersChange, onResetPin, onToggleIndigo }) {
   const [newName, setNewName] = useState("");
   const [error, setError] = useState("");
 
@@ -961,11 +961,15 @@ function FittersTab({ fittersList, allEntries, pins, onFittersChange, onResetPin
         <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
           {list.map(f => (
             <div key={f} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "12px 14px", border: "1px solid #e8e4de", borderRadius: 8, background: "#fff" }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
                 <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 13, color: "#1a1a1a" }}>{f}</span>
                 {pins && pins[f]
                   ? <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 10, color: "#5a9", background: "#eef7f2", borderRadius: 5, padding: "2px 7px" }}>🔒 PIN set</span>
                   : <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 10, color: "#b7860b", background: "#fff8e8", borderRadius: 5, padding: "2px 7px" }}>no PIN yet</span>}
+                <label style={{ display: "flex", alignItems: "center", gap: 5, cursor: "pointer" }} title="Tick if this person is not paid through Indigo (e.g. Tom). Their hours still appear on the client invoice.">
+                  <input type="checkbox" checked={(noIndigo || []).includes(f)} onChange={() => onToggleIndigo(f)} style={{ width: 15, height: 15, accentColor: "#1a1a1a", cursor: "pointer" }} />
+                  <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 10, color: (noIndigo || []).includes(f) ? "#1a1a1a" : "#bbb" }}>Not paid via Indigo</span>
+                </label>
               </div>
               <div style={{ display: "flex", gap: 8 }}>
                 {pins && pins[f] && (
@@ -990,23 +994,52 @@ function RatesTab({ allEntries, rates, fittersList, sites, onRatesChange }) {
   const [manualPairs, setManualPairs] = useState([]); // pairs added this session via picker
   const [pickError, setPickError] = useState("");
 
-  // Pairs from submissions
+  // Which fitters have actually submitted hours (so we never lose rates needed by old invoices)
+  const fittersWithHistory = new Set(allEntries.map(r => r.fitter));
+  const roster = new Set(fittersList || []);
+
+  // Build the pairs to show
   const pairs = [];
   const seen = new Set();
   const addPair = (fitter, site) => {
     const key = `${fitter}|||${site}`;
-    if (!seen.has(key)) { seen.add(key); pairs.push({ fitter, site }); }
+    if (seen.has(key)) return;
+    // Hide pairings for fitters who've been removed AND never submitted anything
+    if (!roster.has(fitter) && !fittersWithHistory.has(fitter)) return;
+    seen.add(key);
+    pairs.push({ fitter, site, former: !roster.has(fitter) });
   };
+  // From submissions
   allEntries.forEach(record => {
     record.entries.forEach(en => addPair(record.fitter, en.siteName));
   });
-  // Pairs that already have a saved rate (so pre-set ones persist after refresh)
+  // From saved rates (so pre-set ones persist after refresh)
   Object.keys(rates || {}).forEach(key => {
     const [fitter, site] = key.split("|||");
     if (fitter && site) addPair(fitter, site);
   });
-  // Pairs added this session via the picker
+  // Added this session via the picker
   manualPairs.forEach(({ fitter, site }) => addPair(fitter, site));
+
+  // Clean up any saved rates belonging to removed fitters with no history
+  const staleKeys = Object.keys(rates || {}).filter(key => {
+    const [fitter] = key.split("|||");
+    return fitter && !roster.has(fitter) && !fittersWithHistory.has(fitter);
+  });
+  useEffect(() => {
+    if (staleKeys.length === 0) return;
+    const cleaned = { ...rates };
+    staleKeys.forEach(k => delete cleaned[k]);
+    onRatesChange(cleaned);
+  }, [staleKeys.join("|")]);
+
+  const removeRate = async (fitter, site) => {
+    const key = `${fitter}|||${site}`;
+    const cleaned = { ...rates };
+    delete cleaned[key];
+    setManualPairs(prev => prev.filter(p => !(p.fitter === fitter && p.site === site)));
+    await onRatesChange(cleaned);
+  };
 
   // Sort for a tidy table
   pairs.sort((a, b) => a.fitter.localeCompare(b.fitter) || a.site.localeCompare(b.site));
@@ -1093,14 +1126,17 @@ function RatesTab({ allEntries, rates, fittersList, sites, onRatesChange }) {
       ) : (
         <>
           <div style={{ border: "1px solid #e8e4de", borderRadius: 10, overflow: "hidden", marginBottom: 16 }}>
-            <div style={{ background: "#1a1a1a", padding: "10px 14px", display: "grid", gridTemplateColumns: "1fr 1fr 110px 110px", gap: 10 }}>
-              {["Fitter", "Site", "Client Rate £/hr", "Fitter Rate £/hr"].map(h => (
-                <span key={h} style={{ fontFamily: "'DM Mono', monospace", fontSize: 10, color: "#C8A96E", textTransform: "uppercase", letterSpacing: "0.08em" }}>{h}</span>
+            <div style={{ background: "#1a1a1a", padding: "10px 14px", display: "grid", gridTemplateColumns: "1fr 1fr 100px 100px 32px", gap: 10 }}>
+              {["Fitter", "Site", "Client Rate £/hr", "Fitter Rate £/hr", ""].map((h, i) => (
+                <span key={i} style={{ fontFamily: "'DM Mono', monospace", fontSize: 10, color: "#C8A96E", textTransform: "uppercase", letterSpacing: "0.08em" }}>{h}</span>
               ))}
             </div>
-            {pairs.map(({ fitter, site }) => (
-              <div key={`${fitter}|||${site}`} style={{ display: "grid", gridTemplateColumns: "1fr 1fr 110px 110px", gap: 10, padding: "10px 14px", borderBottom: "1px solid #f5f2ed", alignItems: "center" }}>
-                <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 12, color: "#1a1a1a" }}>{fitter}</span>
+            {pairs.map(({ fitter, site, former }) => (
+              <div key={`${fitter}|||${site}`} style={{ display: "grid", gridTemplateColumns: "1fr 1fr 100px 100px 32px", gap: 10, padding: "10px 14px", borderBottom: "1px solid #f5f2ed", alignItems: "center", background: former ? "#fafaf8" : "transparent" }}>
+                <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 12, color: former ? "#999" : "#1a1a1a" }}>
+                  {fitter}
+                  {former && <span style={{ fontSize: 9, color: "#b7860b", background: "#fff8e8", borderRadius: 4, padding: "1px 5px", marginLeft: 6 }}>former</span>}
+                </span>
                 <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 12, color: "#888" }}>{site}</span>
                 <div style={{ position: "relative" }}>
                   <span style={{ position: "absolute", left: 8, top: "50%", transform: "translateY(-50%)", fontFamily: "'DM Mono', monospace", fontSize: 11, color: "#aaa" }}>£</span>
@@ -1114,9 +1150,18 @@ function RatesTab({ allEntries, rates, fittersList, sites, onRatesChange }) {
                     type="number" min="0" step="0.5" placeholder="0.00"
                     style={{ ...inputStyle, paddingLeft: 20, fontSize: 12 }} />
                 </div>
+                <button
+                  onClick={() => { if (window.confirm(`Remove the rate for ${fitter} at ${site}?`)) removeRate(fitter, site); }}
+                  title="Remove this rate"
+                  style={{ background: "none", border: "1px solid #eee", borderRadius: 6, color: "#ccc", cursor: "pointer", fontSize: 15, lineHeight: 1, height: 32, width: 32 }}>×</button>
               </div>
             ))}
           </div>
+          {pairs.some(p => p.former) && (
+            <p style={{ fontFamily: "'DM Mono', monospace", fontSize: 11, color: "#b7860b", marginTop: 0, marginBottom: 12 }}>
+              “Former” fitters have been removed from the Fitters list but still have submitted hours. Their rates are kept so past invoices stay correct.
+            </p>
+          )}
           <button onClick={saveAll} style={{ ...btnStyle, marginTop: 0, padding: "11px 24px", background: saved ? "#2ecc71" : "#1a1a1a" }}>
             {saved ? "✓ Saved!" : "Save All Rates"}
           </button>
@@ -1127,7 +1172,7 @@ function RatesTab({ allEntries, rates, fittersList, sites, onRatesChange }) {
 }
 
 // ---------- INVOICES TAB ----------
-function InvoicesTab({ allEntries, rates, sites, lockedWeeks, onToggleLock }) {
+function InvoicesTab({ allEntries, rates, sites, lockedWeeks, noIndigo, onToggleLock }) {
   const weeks = [...new Set(allEntries.map(e => e.weekKey))].sort().reverse();
   const clients = [...new Set(allEntries.flatMap(e => e.entries.map(en => en.client)).filter(Boolean))].sort();
   const [filterWeek, setFilterWeek] = useState(weeks[0] || "all");
@@ -1180,16 +1225,65 @@ function InvoicesTab({ allEntries, rates, sites, lockedWeeks, onToggleLock }) {
   });
 
   const clientTotal = lines.reduce((a, l) => a + l.clientCost, 0);
-  const fitterTotal = lines.reduce((a, l) => a + l.fitterCost, 0);
   const allExpenses = lines.flatMap(l => l.expenses);
   const totalExpenses = allExpenses.reduce((a, e) => a + (e.amount || 0), 0);
   const clientGrandTotal = clientTotal + totalExpenses;
-  const fitterGrandTotal = fitterTotal + totalExpenses;
+
+  // Indigo pays only fitters not marked "not paid via Indigo" (e.g. Tom).
+  // Their hours still appear on the client invoice above.
+  const excluded = new Set(noIndigo || []);
+  const indigoLines = lines.filter(l => !excluded.has(l.fitter));
+  const indigoExpenses = indigoLines.flatMap(l => l.expenses);
+  const indigoExpTotal = indigoExpenses.reduce((a, e) => a + (e.amount || 0), 0);
+  const fitterTotal = indigoLines.reduce((a, l) => a + l.fitterCost, 0);
+  const fitterGrandTotal = fitterTotal + indigoExpTotal;
+  const excludedOnSheet = lines.filter(l => excluded.has(l.fitter)).map(l => l.fitter);
 
   const contactName = filterClient !== "all" ? filterClient : "Client";
   const we = weekEndLabel(filterWeek);
 
   // Print client invoice
+  // Opens generated HTML in a new window with a visible Back/Print bar so the user is never trapped.
+  const openDoc = (html) => {
+    const toolbar = `
+      <div class="ff-bar">
+        <button onclick="ffClose()" class="ff-btn ff-back">← Close</button>
+        <button onclick="window.print()" class="ff-btn ff-print">🖨️ Print / Save PDF</button>
+      </div>
+      <script>
+        function ffClose(){
+          window.close();
+          // Some phone browsers block window.close(); fall back to going back, then show a hint.
+          setTimeout(function(){
+            if(!window.closed){
+              if(history.length > 1){ history.back(); }
+              else { document.getElementById('ff-hint').style.display = 'block'; }
+            }
+          }, 150);
+        }
+      <\/script>
+      <div id="ff-hint" style="display:none;background:#fff8e8;border:1px solid #f39c12;color:#8a6d3b;
+        padding:10px 14px;margin:0 0 16px 0;font-family:Arial,sans-serif;font-size:13px;border-radius:6px;">
+        Close this tab to go back to FineFit.
+      </div>
+      <style>
+        .ff-bar{position:sticky;top:0;display:flex;gap:10px;justify-content:space-between;
+          background:#1a1a1a;padding:10px 14px;margin:-40px -40px 24px -40px;z-index:99;}
+        .ff-btn{font-family:Arial,sans-serif;font-size:14px;padding:10px 16px;border-radius:6px;
+          border:none;cursor:pointer;}
+        .ff-back{background:#fff;color:#1a1a1a;}
+        .ff-print{background:#C8A96E;color:#1a1a1a;font-weight:bold;}
+        @media print{.ff-bar,#ff-hint{display:none !important;}}
+      </style>`;
+    const win = window.open("", "_blank");
+    if (!win) { alert("Please allow pop-ups for this site so the invoice can open."); return; }
+    // Inject the toolbar right after <body>
+    const withBar = html.replace(/<body>/, "<body>" + toolbar);
+    win.document.write(withBar);
+    win.document.close();
+    win.focus();
+  };
+
   const printClientInvoice = () => {
     const rows = lines.map(l => {
       const normalRow = l.normalHours > 0 ? `
@@ -1247,15 +1341,13 @@ function InvoicesTab({ allEntries, rates, sites, lockedWeeks, onToggleLock }) {
       Fine Fit London Limited. Company Number 11244546. Registered in England.<br/>
       Registered Office: Studio 133 Canalot Studios, 222 Kensal Road, London, W10 5BN.
     </div></body></html>`;
-    const win = window.open("", "_blank");
-    win.document.write(html); win.document.close(); win.focus();
-    setTimeout(() => win.print(), 400);
+    openDoc(html);
   };
 
   // Print Indigo payment sheet
   const printIndigoSheet = () => {
     let rowNum = 0;
-    const rows = lines.map((l) => {
+    const rows = indigoLines.map((l) => {
       const normalRow = l.normalHours > 0 ? `
       <tr style="background:${(++rowNum) % 2 === 0 ? "#fff" : "#f9f9f9"}">
         <td style="padding:7px 10px">${rowNum}</td>
@@ -1278,7 +1370,7 @@ function InvoicesTab({ allEntries, rates, sites, lockedWeeks, onToggleLock }) {
       </tr>` : "";
       return normalRow + otRow;
     }).join("");
-    const expRows = allExpenses.length > 0 ? allExpenses.map(exp => `
+    const expRows = indigoExpenses.length > 0 ? indigoExpenses.map(exp => `
       <tr style="background:#fff8f0">
         <td></td>
         <td colspan="2" style="padding:6px 10px;font-size:11px;color:#888">EXPENSES: ${exp.description}</td>
@@ -1303,15 +1395,13 @@ function InvoicesTab({ allEntries, rates, sites, lockedWeeks, onToggleLock }) {
       <thead><tr><th>#</th><th>Fitter</th><th>Rate</th><th>Hours</th><th>£/hr</th><th>Gross</th><th>Site Ref</th></tr></thead>
       <tbody>
         ${rows}${expRows}
-        <tr class="total-row"><td colspan="5">EXPENSES TOTAL</td><td>£${totalExpenses.toFixed(2)}</td><td></td></tr>
+        <tr class="total-row"><td colspan="5">EXPENSES TOTAL</td><td>£${indigoExpTotal.toFixed(2)}</td><td></td></tr>
         <tr class="grand"><td colspan="5">TOTAL FITTER PAYMENT</td><td>£${fitterGrandTotal.toFixed(2)}</td><td></td></tr>
       </tbody>
     </table>
     <p style="margin-top:24px;font-size:11px;color:#888">Generated ${new Date().toLocaleDateString("en-GB")} &nbsp;|&nbsp; Fine Fit London Limited &nbsp;|&nbsp; Company No. 11244546</p>
     </body></html>`;
-    const win = window.open("", "_blank");
-    win.document.write(html); win.document.close(); win.focus();
-    setTimeout(() => win.print(), 400);
+    openDoc(html);
   };
 
   // Xero CSV
@@ -1452,6 +1542,14 @@ function InvoicesTab({ allEntries, rates, sites, lockedWeeks, onToggleLock }) {
 
           {/* INDIGO PAYMENT SHEET PREVIEW */}
           {activeDoc === "indigo" && (
+            <div>
+            {excludedOnSheet.length > 0 && (
+              <div style={{ background: "#fff8e8", border: "1px solid #f39c12", borderRadius: 8, padding: "9px 12px", marginBottom: 12 }}>
+                <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 11, color: "#8a6d3b" }}>
+                  Not on this sheet (not paid via Indigo): <strong>{[...new Set(excludedOnSheet)].join(", ")}</strong>. Their hours are still charged on the client invoice.
+                </span>
+              </div>
+            )}
             <div style={{ border: "1px solid #e8e4de", borderRadius: 10, overflow: "hidden", marginBottom: 16 }}>
               <div style={{ background: "#1a1a1a", padding: "12px 16px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                 <div>
@@ -1472,7 +1570,7 @@ function InvoicesTab({ allEntries, rates, sites, lockedWeeks, onToggleLock }) {
                   </tr>
                 </thead>
                 <tbody>
-                  {lines.flatMap((l, i) => {
+                  {indigoLines.flatMap((l, i) => {
                     const rowsOut = [];
                     if (l.normalHours > 0) rowsOut.push(
                       <tr key={`${i}-n`} style={{ borderBottom: "1px solid #f5f2ed" }}>
@@ -1494,7 +1592,7 @@ function InvoicesTab({ allEntries, rates, sites, lockedWeeks, onToggleLock }) {
                     );
                     return rowsOut;
                   })}
-                  {allExpenses.map((exp, i) => (
+                  {indigoExpenses.map((exp, i) => (
                     <tr key={`exp-${i}`} style={{ borderBottom: "1px solid #f5f2ed", background: "#fafaf8" }}>
                       <td style={{ ...tdStyle, color: "#888", fontStyle: "italic", fontSize: 11 }} colSpan={2}>EXPENSES: {exp.description}</td>
                       <td style={{ ...tdStyle, textAlign: "right", fontFamily: "'DM Mono', monospace", fontSize: 11 }}>1.00</td>
@@ -1508,6 +1606,7 @@ function InvoicesTab({ allEntries, rates, sites, lockedWeeks, onToggleLock }) {
                   </tr>
                 </tbody>
               </table>
+            </div>
             </div>
           )}
 
@@ -1961,6 +2060,7 @@ export default function App() {
   const [lockedWeeks, setLockedWeeks] = useState([]);
   const [fittersList, setFittersList] = useState([]);
   const [pins, setPins] = useState({});
+  const [noIndigo, setNoIndigo] = useState([]); // fitters excluded from the Indigo payment sheet
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -1968,8 +2068,8 @@ export default function App() {
     Promise.all([
       load("finefit_entries"), loadStr("finefit_fitter_name"),
       load("finefit_sites"), load("finefit_tasks"), load("finefit_rates"),
-      load("finefit_locked_weeks"), load("finefit_fitters"), load("finefit_pins"),
-    ]).then(([entries, name, savedSites, savedTasks, savedRates, savedLocks, savedFitters, savedPins]) => {
+      load("finefit_locked_weeks"), load("finefit_fitters"), load("finefit_pins"), load("finefit_no_indigo"),
+    ]).then(([entries, name, savedSites, savedTasks, savedRates, savedLocks, savedFitters, savedPins, savedNoIndigo]) => {
       setAllEntries(entries || []);
       if (name) setFitterName(name);
       setSites(savedSites || []);
@@ -1978,6 +2078,7 @@ export default function App() {
       setLockedWeeks(savedLocks || []);
       setFittersList(savedFitters || []);
       setPins(savedPins || {});
+      setNoIndigo(savedNoIndigo || []);
       setLoading(false);
     });
   }, []);
@@ -1996,6 +2097,10 @@ export default function App() {
   const handleFittersChange = async (u) => { setFittersList(u); await save("finefit_fitters", u); };
   const handleSetPin = async (name, hash) => { const u = { ...pins, [name]: hash }; setPins(u); await save("finefit_pins", u); };
   const handleResetPin = async (name) => { const u = { ...pins }; delete u[name]; setPins(u); await save("finefit_pins", u); };
+  const handleToggleIndigo = async (name) => {
+    const u = noIndigo.includes(name) ? noIndigo.filter(n => n !== name) : [...noIndigo, name];
+    setNoIndigo(u); await save("finefit_no_indigo", u);
+  };
   const isFitter = view === "fitter";
 
   return (
@@ -2021,8 +2126,8 @@ export default function App() {
             <AdminLogin onLogin={() => setView("admin")} />
           ) : (
             <AdminDashboard allEntries={allEntries} sites={sites} tasks={tasks} rates={rates}
-              lockedWeeks={lockedWeeks} fittersList={fittersList} pins={pins} onSitesChange={handleSitesChange} onTasksChange={handleTasksChange}
-              onRatesChange={handleRatesChange} onDeleteRecord={handleDeleteRecord} onFittersChange={handleFittersChange} onResetPin={handleResetPin}
+              lockedWeeks={lockedWeeks} fittersList={fittersList} pins={pins} noIndigo={noIndigo} onSitesChange={handleSitesChange} onTasksChange={handleTasksChange}
+              onRatesChange={handleRatesChange} onDeleteRecord={handleDeleteRecord} onFittersChange={handleFittersChange} onResetPin={handleResetPin} onToggleIndigo={handleToggleIndigo}
               onUpdateRecord={handleUpdateRecord} onToggleLock={handleToggleLock} onLogout={() => setView("fitter")} />
           )}
         </div>
