@@ -887,7 +887,7 @@ function AdminDashboard({ allEntries, sites, tasks, rates, lockedWeeks, fittersL
         <button onClick={onLogout} style={{ fontFamily: "'DM Mono', monospace", fontSize: 11, background: "none", border: "1px solid #ddd", borderRadius: 6, padding: "6px 12px", cursor: "pointer", color: "#888" }}>Log out</button>
       </div>
       <div style={{ display: "flex", gap: 4, marginBottom: 24, background: "#f5f2ed", borderRadius: 8, padding: 4 }}>
-        {[["submissions", "Timesheets"], ["report", "Invoices"], ["rates", "Rates"], ["fitters", "Fitters"], ["sites", "Sites"], ["tasks", "Tasks"]].map(([key, label]) => (
+        {[["submissions", "Timesheets"], ["report", "Invoices"], ["earnings", "Earnings"], ["rates", "Rates"], ["fitters", "Fitters"], ["sites", "Sites"], ["tasks", "Tasks"]].map(([key, label]) => (
           <button key={key} onClick={() => setTab(key)} style={{
             flex: 1, fontFamily: "'DM Mono', monospace", fontSize: 11, padding: "8px 0",
             border: "none", borderRadius: 6, cursor: "pointer",
@@ -898,6 +898,7 @@ function AdminDashboard({ allEntries, sites, tasks, rates, lockedWeeks, fittersL
       </div>
       {tab === "submissions" && <SubmissionsTab allEntries={allEntries} sites={sites} tasks={tasks} lockedWeeks={lockedWeeks} fittersList={fittersList} onDeleteRecord={onDeleteRecord} onUpdateRecord={onUpdateRecord} />}
       {tab === "report" && <InvoicesTab allEntries={allEntries} rates={rates} sites={sites} lockedWeeks={lockedWeeks} noIndigo={noIndigo} onToggleLock={onToggleLock} />}
+      {tab === "earnings" && <EarningsTab allEntries={allEntries} rates={rates} sites={sites} noIndigo={noIndigo} />}
       {tab === "rates" && <RatesTab allEntries={allEntries} rates={rates} fittersList={fittersList} sites={sites} onRatesChange={onRatesChange} />}
       {tab === "fitters" && <FittersTab fittersList={fittersList} allEntries={allEntries} pins={pins} noIndigo={noIndigo} onFittersChange={onFittersChange} onResetPin={onResetPin} onToggleIndigo={onToggleIndigo} />}
       {tab === "sites" && <SitesTab sites={sites} onSitesChange={onSitesChange} />}
@@ -1167,6 +1168,127 @@ function RatesTab({ allEntries, rates, fittersList, sites, onRatesChange }) {
           </button>
         </>
       )}
+    </div>
+  );
+}
+
+// ---------- EARNINGS TAB ----------
+function EarningsTab({ allEntries, rates, sites, noIndigo }) {
+  const [view, setView] = useState("period"); // "period" | "client" | "fitter"
+
+  const siteMult = (siteName) => { const s = (sites || []).find(x => x.name === siteName); return s?.otMultiplier ?? 1.5; };
+  const excluded = new Set(noIndigo || []);
+
+  // Build one profit line per fitter+site+period from every submission
+  const rows = [];
+  allEntries.forEach(record => {
+    const period = record.weekKey;
+    record.entries.forEach(en => {
+      let nh = en.normalHours, oh = en.overtimeHours;
+      if (nh === undefined || oh === undefined) { const s = splitOvertime(en.day, en.hours || 0, en.date); nh = s.normal; oh = s.overtime; }
+      const rk = `${record.fitter}|||${en.siteName}`;
+      const cr = parseFloat(rates[rk]?.client) || 0;
+      const fr = parseFloat(rates[rk]?.fitter) || 0;
+      const mult = siteMult(en.siteName);
+      const charged = nh * cr + oh * cr * mult;
+      // Tom (excluded from Indigo) has no payout, so all his charged time is margin
+      const paid = excluded.has(record.fitter) ? 0 : (nh * fr + oh * fr * mult);
+      rows.push({ period, fitter: record.fitter, client: en.client, site: en.siteName, charged, paid, profit: charged - paid, hours: nh + oh });
+    });
+  });
+
+  const sum = (arr, key) => arr.reduce((a, r) => a + (r[key] || 0), 0);
+  const totalCharged = sum(rows, "charged");
+  const totalPaid = sum(rows, "paid");
+  const totalProfit = totalCharged - totalPaid;
+
+  // This calendar month
+  const now = new Date();
+  const monthRows = rows.filter(r => { const d = new Date(r.period); return d.getMonth() === now.getMonth() && d.getFullYear() === now.getFullYear(); });
+  const monthProfit = sum(monthRows, "charged") - sum(monthRows, "paid");
+
+  // Group helper
+  const groupBy = (key) => {
+    const g = {};
+    rows.forEach(r => {
+      const k = r[key] || "—";
+      if (!g[k]) g[k] = { key: k, charged: 0, paid: 0, profit: 0, hours: 0 };
+      g[k].charged += r.charged; g[k].paid += r.paid; g[k].profit += r.profit; g[k].hours += r.hours;
+    });
+    return Object.values(g);
+  };
+
+  let grouped;
+  if (view === "period") grouped = groupBy("period").sort((a, b) => b.key.localeCompare(a.key));
+  else if (view === "client") grouped = groupBy("client").sort((a, b) => b.profit - a.profit);
+  else grouped = groupBy("fitter").sort((a, b) => b.profit - a.profit);
+
+  const labelFor = (k) => view === "period" ? periodLabel(k) : k;
+  function periodLabel(wk) {
+    if (!wk) return "—";
+    const start = new Date(wk); const end = new Date(start); end.setDate(end.getDate() + 13);
+    return `${start.toLocaleDateString("en-GB", { day: "numeric", month: "short" })} – ${end.toLocaleDateString("en-GB", { day: "numeric", month: "short" })}`;
+  }
+
+  if (rows.length === 0) {
+    return <p style={{ textAlign: "center", fontFamily: "'DM Mono', monospace", fontSize: 13, color: "#bbb", padding: "40px 0" }}>No earnings to show yet — they'll appear once fitters submit hours and rates are set.</p>;
+  }
+
+  const money = (n) => (n < 0 ? "-" : "") + "£" + Math.abs(n).toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+
+  return (
+    <div>
+      <p style={{ fontFamily: "'DM Mono', monospace", fontSize: 12, color: "#888", marginBottom: 16 }}>
+        Your margin = what clients are charged minus what fitters are paid via Indigo. Expenses are pass-through and not counted. Estimates based on submitted hours and current rates.
+      </p>
+
+      {/* Headline cards */}
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 12 }}>
+        <div style={{ background: "#1a1a1a", borderRadius: 10, padding: "14px 16px" }}>
+          <div style={{ fontFamily: "'DM Mono', monospace", fontSize: 10, color: "#888", textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: 4 }}>Profit — all time</div>
+          <div style={{ fontFamily: "'DM Mono', monospace", fontSize: 22, color: "#C8A96E", fontWeight: 700 }}>{money(totalProfit)}</div>
+        </div>
+        <div style={{ background: "#faf6ef", border: "1px solid #e8e4de", borderRadius: 10, padding: "14px 16px" }}>
+          <div style={{ fontFamily: "'DM Mono', monospace", fontSize: 10, color: "#888", textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: 4 }}>Profit — this month</div>
+          <div style={{ fontFamily: "'DM Mono', monospace", fontSize: 22, color: "#1a1a1a", fontWeight: 700 }}>{money(monthProfit)}</div>
+        </div>
+      </div>
+
+      <div style={{ display: "flex", gap: 18, padding: "10px 14px", background: "#f5f2ed", borderRadius: 8, marginBottom: 18 }}>
+        <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 11, color: "#888" }}>Charged: <strong style={{ color: "#1a1a1a" }}>{money(totalCharged)}</strong></span>
+        <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 11, color: "#888" }}>Paid out: <strong style={{ color: "#1a1a1a" }}>{money(totalPaid)}</strong></span>
+        <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 11, color: "#888" }}>Margin: <strong style={{ color: "#5a9" }}>{totalCharged > 0 ? Math.round((totalProfit / totalCharged) * 100) : 0}%</strong></span>
+      </div>
+
+      {/* View toggle */}
+      <div style={{ display: "flex", gap: 6, marginBottom: 12 }}>
+        {[["period", "By period"], ["client", "By client"], ["fitter", "By fitter"]].map(([k, lbl]) => (
+          <button key={k} onClick={() => setView(k)} style={{
+            fontFamily: "'DM Mono', monospace", fontSize: 12, padding: "7px 12px", borderRadius: 7, cursor: "pointer",
+            border: `1px solid ${view === k ? "#1a1a1a" : "#e0dbd4"}`, background: view === k ? "#1a1a1a" : "transparent",
+            color: view === k ? "#fff" : "#888" }}>{lbl}</button>
+        ))}
+      </div>
+
+      {/* Breakdown table */}
+      <div style={{ border: "1px solid #e8e4de", borderRadius: 10, overflow: "hidden" }}>
+        <div style={{ background: "#1a1a1a", padding: "9px 14px", display: "grid", gridTemplateColumns: "1.4fr 1fr 1fr 1fr", gap: 8 }}>
+          {[view === "period" ? "Period" : view === "client" ? "Client" : "Fitter", "Charged", "Paid", "Profit"].map((h, i) => (
+            <span key={i} style={{ fontFamily: "'DM Mono', monospace", fontSize: 10, color: "#C8A96E", textTransform: "uppercase", letterSpacing: "0.06em", textAlign: i === 0 ? "left" : "right" }}>{h}</span>
+          ))}
+        </div>
+        {grouped.map((g, i) => (
+          <div key={i} style={{ display: "grid", gridTemplateColumns: "1.4fr 1fr 1fr 1fr", gap: 8, padding: "10px 14px", borderBottom: "1px solid #f5f2ed", alignItems: "center" }}>
+            <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 12, color: "#1a1a1a" }}>{labelFor(g.key)}</span>
+            <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 12, color: "#888", textAlign: "right" }}>{money(g.charged)}</span>
+            <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 12, color: "#888", textAlign: "right" }}>{money(g.paid)}</span>
+            <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 12, color: g.profit >= 0 ? "#1a9c5a" : "#c0392b", textAlign: "right", fontWeight: 700 }}>{money(g.profit)}</span>
+          </div>
+        ))}
+      </div>
+      <p style={{ fontFamily: "'DM Mono', monospace", fontSize: 10, color: "#bbb", marginTop: 10 }}>
+        Where a rate hasn't been set, that line counts as £0 — set rates in the Rates tab for an accurate figure.
+      </p>
     </div>
   );
 }
