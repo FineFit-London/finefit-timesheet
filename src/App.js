@@ -617,7 +617,7 @@ function FitterForm({ fitterName, onLogout, onSubmit, sites, tasks, allEntries, 
               <div style={{ padding: "14px" }}>
                 {/* Site */}
                 <label style={{ ...labelStyle, marginBottom: 4 }}>Site</label>
-                <select value={entry.siteId} onChange={e => updateEntry(i, "siteId", e.target.value)} style={selectStyle}>
+                <select value={entry.siteId} onChange={e => { const u = [...entries]; u[i] = { ...u[i], siteId: e.target.value, tasks: [] }; setEntries(u); }} style={selectStyle}>
                   <option value="">— Select site —</option>
                   {sites.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
                 </select>
@@ -634,21 +634,26 @@ function FitterForm({ fitterName, onLogout, onSubmit, sites, tasks, allEntries, 
                   placeholder="e.g. 7.5" type="number" min="0" max="24" step="0.5"
                   style={{ ...inputStyle, width: 120 }} />
 
-                {/* Tasks */}
+                {/* Tasks — only those for the selected site (plus any legacy all-site tasks) */}
                 <label style={{ ...labelStyle, marginTop: 14, marginBottom: 8 }}>Tasks completed</label>
                 <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
-                  {tasks.map(task => {
-                    const checked = entry.tasks.includes(task.id);
-                    return (
-                      <button key={task.id} onClick={() => toggleTask(i, task.id)}
-                        style={{ fontFamily: "'DM Mono', monospace", fontSize: 12, padding: "6px 12px", borderRadius: 20,
-                          border: `1px solid ${checked ? "#1a1a1a" : "#e0dbd4"}`,
-                          background: checked ? "#1a1a1a" : "transparent",
-                          color: checked ? "#fff" : "#888", cursor: "pointer" }}>
-                        {task.name}
-                      </button>
-                    );
-                  })}
+                  {(() => {
+                    const siteTasks = tasks.filter(t => !t.siteId || t.siteId === entry.siteId);
+                    if (!entry.siteId) return <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 11, color: "#bbb" }}>Pick a site first to see its tasks.</span>;
+                    if (siteTasks.length === 0) return <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 11, color: "#bbb" }}>No tasks set for this site yet — ask Tom.</span>;
+                    return siteTasks.map(task => {
+                      const checked = entry.tasks.includes(task.id);
+                      return (
+                        <button key={task.id} onClick={() => toggleTask(i, task.id)}
+                          style={{ fontFamily: "'DM Mono', monospace", fontSize: 12, padding: "6px 12px", borderRadius: 20,
+                            border: `1px solid ${checked ? "#1a1a1a" : "#e0dbd4"}`,
+                            background: checked ? "#1a1a1a" : "transparent",
+                            color: checked ? "#fff" : "#888", cursor: "pointer" }}>
+                          {task.name}
+                        </button>
+                      );
+                    });
+                  })()}
                 </div>
 
                 {/* Expenses */}
@@ -951,7 +956,7 @@ function AdminDashboard({ allEntries, sites, tasks, rates, lockedWeeks, fittersL
       {tab === "rates" && <RatesTab allEntries={allEntries} rates={rates} fittersList={fittersList} sites={sites} onRatesChange={onRatesChange} />}
       {tab === "fitters" && <FittersTab fittersList={fittersList} allEntries={allEntries} pins={pins} noIndigo={noIndigo} onFittersChange={onFittersChange} onResetPin={onResetPin} onToggleIndigo={onToggleIndigo} />}
       {tab === "sites" && <SitesTab sites={sites} onSitesChange={onSitesChange} />}
-      {tab === "tasks" && <TasksTab tasks={tasks} onTasksChange={onTasksChange} />}
+      {tab === "tasks" && <TasksTab tasks={tasks} sites={sites} onTasksChange={onTasksChange} />}
     </div>
   );
 }
@@ -1594,6 +1599,89 @@ function InvoicesTab({ allEntries, rates, sites, lockedWeeks, noIndigo, onToggle
 
   const hasRates = lines.some(l => l.clientRate > 0 || l.fitterRate > 0);
 
+  // Client timesheet — proof-of-work sheet per company, matching Tom's existing weekly format.
+  const printClientTimesheet = () => {
+    if (filterWeek === "all") { alert("Please pick a specific fortnight above first."); return; }
+    const periodDays = getPeriodDays(filterWeek); // 14 days, each { iso, dayName, label, week }
+
+    // Which clients to include
+    const clientsInPeriod = [...new Set(
+      allEntries.filter(r => r.weekKey === filterWeek)
+        .flatMap(r => r.entries.map(en => en.client)).filter(Boolean)
+    )].sort();
+    const targetClients = filterClient === "all" ? clientsInPeriod : [filterClient];
+    if (targetClients.length === 0) { alert("No work found for this period."); return; }
+
+    const dayAbbr = { Monday: "MON", Tuesday: "TUE", Wednesday: "WED", Thursday: "THUR", Friday: "FRI", Saturday: "SAT", Sunday: "SUN" };
+    const fmt = (iso) => new Date(iso + "T00:00:00").toLocaleDateString("en-GB");
+
+    // Build one weekly sheet (week = 1 or 2) for a client
+    const weekSheet = (client, weekNo) => {
+      const days = periodDays.filter(d => d.week === weekNo);
+      const weekEnding = fmt(days[days.length - 1].iso);
+      let weekTotal = 0;
+      const dayBlocks = days.map(d => {
+        // entries for this client on this date
+        const rows = [];
+        allEntries.filter(r => r.weekKey === filterWeek).forEach(r => {
+          r.entries.forEach(en => {
+            if (en.client === client && en.date === d.iso) {
+              const hrs = en.hours || 0; weekTotal += hrs;
+              const desc = (en.tasks || []).map(t => t.label).join(", ");
+              rows.push(`<tr>
+                <td class="dcell"></td>
+                <td>${r.fitter}</td>
+                <td>${en.siteName}</td>
+                <td>${desc}</td>
+                <td class="num">${hrs.toFixed(2)}</td>
+              </tr>`);
+            }
+          });
+        });
+        // a couple of blank rows to mirror his template look
+        const blanks = Array(Math.max(0, 3 - rows.length)).fill('<tr><td class="dcell"></td><td></td><td></td><td></td><td class="num"></td></tr>').join("");
+        return `<tr class="dayhead">
+            <td>${dayAbbr[days.find(x => x.iso === d.iso).dayName]}</td>
+            <td>FITTER</td><td>PROJECT</td><td>DESCRIPTION OF HOLD-UPS OR EXTRA WORKS</td><td class="num">WORKING</td>
+          </tr>${rows.join("")}${blanks}`;
+      }).join("");
+
+      return `
+        <div class="sheet">
+          <table class="hdr">
+            <tr><td class="k">NAME:</td><td class="v">FineFit</td><td class="tot" rowspan="2"><div>TOTAL HOURS<br/>PER WEEK</div><div class="totn">${weekTotal.toFixed(2)}</div></td></tr>
+            <tr><td class="k">W/E:</td><td class="v">${weekEnding}</td></tr>
+            <tr><td class="k">CLIENT:</td><td class="v">${client}</td></tr>
+          </table>
+          <table class="grid">${dayBlocks}</table>
+        </div>`;
+    };
+
+    const body = targetClients.map(client =>
+      [1, 2].map(wk => weekSheet(client, wk)).join("")
+    ).join("");
+
+    const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>FineFit Timesheet</title>
+      <style>
+        *{box-sizing:border-box;} body{font-family:Arial,Helvetica,sans-serif;color:#111;padding:40px;font-size:12px;}
+        .sheet{page-break-after:always;margin-bottom:30px;}
+        table{border-collapse:collapse;width:100%;}
+        .hdr{margin-bottom:6px;width:100%;}
+        .hdr td{padding:3px 6px;vertical-align:top;}
+        .hdr .k{font-weight:bold;width:70px;border:1px solid #000;}
+        .hdr .v{border:1px solid #000;font-weight:bold;}
+        .hdr .tot{width:110px;text-align:center;border:2px solid #000;font-weight:bold;font-size:10px;}
+        .hdr .totn{font-size:16px;margin-top:4px;}
+        .grid td{border:1px solid #999;padding:4px 6px;height:20px;}
+        .grid .dayhead td{background:#000;color:#fff;font-weight:bold;font-size:11px;border:1px solid #000;}
+        .grid .num{text-align:right;width:70px;}
+        .grid .dcell{width:44px;font-weight:bold;}
+        @media print{ body{padding:12px;} }
+      </style></head><body>${body}</body></html>`;
+
+    openDoc(html);
+  };
+
   return (
     <div>
       <p style={{ fontFamily: "'DM Mono', monospace", fontSize: 12, color: "#888", marginBottom: 16 }}>
@@ -1809,6 +1897,7 @@ function InvoicesTab({ allEntries, rates, sites, lockedWeeks, noIndigo, onToggle
           )}
 
           {/* Action buttons */}
+          <button onClick={printClientTimesheet} style={{ ...btnStyle, marginTop: 0, marginBottom: 8, padding: "12px 8px", fontSize: 12, textAlign: "center", width: "100%", background: "#1a1a1a" }}>📄 Client Timesheet (send to company)</button>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8 }}>
             <button onClick={printClientInvoice} style={{ ...btnStyle, marginTop: 0, padding: "12px 8px", fontSize: 12, textAlign: "center" }}>🖨️ Client Invoice</button>
             <button onClick={printIndigoSheet} style={{ ...btnStyle, marginTop: 0, padding: "12px 8px", fontSize: 12, textAlign: "center", background: "#2c3e50" }}>📋 Indigo Sheet</button>
@@ -2101,7 +2190,7 @@ function EditSubmission({ record, sites, tasks, onSave, onCancel }) {
               </div>
 
               <label style={{ ...labelStyle, marginBottom: 4 }}>Site</label>
-              <select value={entry.siteId} onChange={e => updateEntry(i, "siteId", e.target.value)} style={{ ...selectStyle, fontSize: 12 }}>
+              <select value={entry.siteId} onChange={e => { const u = [...entries]; u[i] = { ...u[i], siteId: e.target.value, tasks: [] }; setEntries(u); }} style={{ ...selectStyle, fontSize: 12 }}>
                 <option value="">— Select site —</option>
                 {sites.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
               </select>
@@ -2114,7 +2203,7 @@ function EditSubmission({ record, sites, tasks, onSave, onCancel }) {
 
               <label style={{ ...labelStyle, marginTop: 12, marginBottom: 6 }}>Tasks</label>
               <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-                {tasks.map(task => {
+                {tasks.filter(task => !task.siteId || task.siteId === entry.siteId).map(task => {
                   const checked = entry.tasks.includes(task.id);
                   return (
                     <button key={task.id} onClick={() => toggleTask(i, task.id)} style={{
@@ -2211,35 +2300,78 @@ function SitesTab({ sites, onSitesChange }) {
 }
 
 // ---------- TASKS TAB ----------
-function TasksTab({ tasks, onTasksChange }) {
+function TasksTab({ tasks, sites, onTasksChange }) {
   const [taskName, setTaskName] = useState("");
+  const [siteId, setSiteId] = useState("");
   const [error, setError] = useState("");
+
+  const siteOptions = [...(sites || [])].sort((a, b) => a.name.localeCompare(b.name));
+
   const addTask = async () => {
+    if (!siteId) { setError("Pick which site this task is for."); return; }
     if (!taskName.trim()) { setError("Enter a task name."); return; }
-    if (tasks.find(t => t.name.toLowerCase() === taskName.trim().toLowerCase())) { setError("Task already exists."); return; }
-    await onTasksChange([...tasks, { id: Date.now().toString(), name: taskName.trim() }]);
+    if (tasks.find(t => t.siteId === siteId && t.name.toLowerCase() === taskName.trim().toLowerCase())) { setError("That task already exists for this site."); return; }
+    await onTasksChange([...tasks, { id: Date.now().toString(), name: taskName.trim(), siteId }]);
     setTaskName(""); setError("");
   };
+
+  // Group tasks by site for display. Tasks with no siteId are "all sites" (legacy).
+  const legacy = tasks.filter(t => !t.siteId);
+  const bySite = siteOptions.map(s => ({ site: s, list: tasks.filter(t => t.siteId === s.id) }));
+
   return (
     <div>
-      <p style={{ fontFamily: "'DM Mono', monospace", fontSize: 12, color: "#888", marginBottom: 20 }}>Add task types fitters can log against each day's work.</p>
+      <p style={{ fontFamily: "'DM Mono', monospace", fontSize: 12, color: "#888", marginBottom: 20 }}>Add the tasks for each job. Fitters only see the tasks for the site they've picked.</p>
       <div style={{ background: "#f5f2ed", borderRadius: 10, padding: 16, marginBottom: 20 }}>
         <div style={{ fontFamily: "'DM Mono', monospace", fontSize: 11, color: "#888", textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: 12 }}>Add Task</div>
-        <label style={labelStyle}>Task Name</label>
+        <label style={labelStyle}>Site</label>
+        <select value={siteId} onChange={e => { setSiteId(e.target.value); setError(""); }} style={selectStyle}>
+          <option value="">— Select site —</option>
+          {siteOptions.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+        </select>
+        <label style={{ ...labelStyle, marginTop: 12 }}>Task Name</label>
         <input value={taskName} onChange={e => { setTaskName(e.target.value); setError(""); }}
           onKeyDown={e => e.key === "Enter" && addTask()}
-          placeholder="e.g. First fix, Second fix, Plastering…" style={inputStyle} />
+          placeholder="e.g. Kitchen, Drawing room, Hall…" style={inputStyle} />
         {error && <p style={{ color: "#c0392b", fontFamily: "'DM Mono', monospace", fontSize: 12, marginTop: 8, marginBottom: 0 }}>{error}</p>}
         <button onClick={addTask} style={{ ...btnStyle, marginTop: 12, padding: "10px 18px" }}>+ Add Task</button>
+        {siteOptions.length === 0 && <p style={{ fontFamily: "'DM Mono', monospace", fontSize: 11, color: "#b7860b", marginTop: 8, marginBottom: 0 }}>Add a site in the Sites tab first.</p>}
       </div>
+
       {tasks.length === 0 ? (
         <p style={{ textAlign: "center", fontFamily: "'DM Mono', monospace", fontSize: 13, color: "#bbb", padding: "24px 0" }}>No tasks added yet.</p>
       ) : (
-        <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
-          {tasks.map(t => (
-            <div key={t.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 12px", border: "1px solid #e8e4de", borderRadius: 20, background: "#fff" }}>
-              <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 12, color: "#1a1a1a" }}>{t.name}</span>
-              <button onClick={() => onTasksChange(tasks.filter(x => x.id !== t.id))} style={{ background: "none", border: "none", color: "#ccc", cursor: "pointer", fontSize: 14, padding: 0, lineHeight: 1 }}>×</button>
+        <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+          {legacy.length > 0 && (
+            <div>
+              <div style={{ fontFamily: "'DM Mono', monospace", fontSize: 11, color: "#b7860b", marginBottom: 8 }}>All sites (added before per-site tasks — reassign by re-adding under a site, then removing here)</div>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+                {legacy.map(t => (
+                  <div key={t.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 12px", border: "1px solid #e8e4de", borderRadius: 20, background: "#fff" }}>
+                    <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 12, color: "#1a1a1a" }}>{t.name}</span>
+                    <button onClick={() => onTasksChange(tasks.filter(x => x.id !== t.id))} style={{ background: "none", border: "none", color: "#ccc", cursor: "pointer", fontSize: 14, padding: 0, lineHeight: 1 }}>×</button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+          {bySite.map(({ site, list }) => (
+            <div key={site.id}>
+              <div style={{ fontFamily: "'DM Mono', monospace", fontSize: 12, color: "#1a1a1a", marginBottom: 8 }}>
+                {site.name} <span style={{ color: "#C8A96E" }}>→ {site.client}</span>
+              </div>
+              {list.length === 0 ? (
+                <p style={{ fontFamily: "'DM Mono', monospace", fontSize: 11, color: "#bbb", margin: 0 }}>No tasks yet for this site.</p>
+              ) : (
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+                  {list.map(t => (
+                    <div key={t.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 12px", border: "1px solid #e8e4de", borderRadius: 20, background: "#fff" }}>
+                      <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 12, color: "#1a1a1a" }}>{t.name}</span>
+                      <button onClick={() => onTasksChange(tasks.filter(x => x.id !== t.id))} style={{ background: "none", border: "none", color: "#ccc", cursor: "pointer", fontSize: 14, padding: 0, lineHeight: 1 }}>×</button>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
           ))}
         </div>
