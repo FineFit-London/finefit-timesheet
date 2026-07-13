@@ -81,6 +81,15 @@ function isBankHoliday(dateIso) {
   return !!dateIso && BANK_HOLIDAYS.has(dateIso);
 }
 
+// Areas worked for an entry, handling both the new free-text `areas` (strings)
+// and legacy `tasks` (objects with a label). Returns an array of strings.
+function entryAreas(en) {
+  if (!en) return [];
+  if (Array.isArray(en.areas) && en.areas.length) return en.areas;
+  if (Array.isArray(en.tasks) && en.tasks.length) return en.tasks.map(t => (typeof t === "string" ? t : t.label)).filter(Boolean);
+  return [];
+}
+
 // Receipts may be an old plain string (image data URL) or a {data,type,name} object.
 function receiptSrc(r) { return !r ? null : (typeof r === "string" ? r : r.data); }
 function receiptIsPdf(r) { return !!r && typeof r === "object" && r.type === "pdf"; }
@@ -269,9 +278,9 @@ function FitterLogin({ fittersList, pins, onSetPin, onLogin }) {
 }
 
 // ---------- FITTER FORM ----------
-function FitterForm({ fitterName, onLogout, onSubmit, sites, tasks, allEntries, lockedWeeks, rates, onDeleteRecord, onUpdateRecord }) {
+function FitterForm({ fitterName, onLogout, onSubmit, sites, allEntries, lockedWeeks, rates, onDeleteRecord, onUpdateRecord }) {
   const periodDays = getPeriodDays();
-  const emptyEntry = () => ({ date: periodDays[0].iso, day: periodDays[0].dayName, siteId: "", hours: "", tasks: [], expenses: [] });
+  const emptyEntry = () => ({ date: periodDays[0].iso, day: periodDays[0].dayName, siteId: "", hours: "", areas: [], areaDraft: "", expenses: [] });
   const emptyExpense = () => ({ description: "", amount: "", receipt: null });
   const draftKey = `finefit_draft_${fitterName}`;
 
@@ -313,10 +322,37 @@ function FitterForm({ fitterName, onLogout, onSubmit, sites, tasks, allEntries, 
     updated[i] = { ...updated[i], [field]: value };
     setEntries(updated);
   };
-  const toggleTask = (i, taskId) => {
-    const current = entries[i].tasks;
-    const next = current.includes(taskId) ? current.filter(t => t !== taskId) : [...current, taskId];
-    updateEntry(i, "tasks", next);
+  // Add the typed area (or a tapped suggestion) to this day's list of areas
+  const addArea = (i, value) => {
+    const name = (value ?? entries[i].areaDraft ?? "").trim();
+    if (!name) return;
+    const updated = [...entries];
+    const existing = updated[i].areas || [];
+    // avoid duplicates (case-insensitive)
+    if (!existing.some(a => a.toLowerCase() === name.toLowerCase())) {
+      updated[i] = { ...updated[i], areas: [...existing, name], areaDraft: "" };
+    } else {
+      updated[i] = { ...updated[i], areaDraft: "" };
+    }
+    setEntries(updated);
+  };
+  const removeArea = (i, name) => {
+    const updated = [...entries];
+    updated[i] = { ...updated[i], areas: (updated[i].areas || []).filter(a => a !== name) };
+    setEntries(updated);
+  };
+  // Areas typed before for this site (mined from past submissions) → offered as tap-suggestions
+  const areaSuggestions = (siteId) => {
+    if (!siteId) return [];
+    const set = new Set();
+    (allEntries || []).forEach(r => (r.entries || []).forEach(en => {
+      if (en.siteId === siteId) {
+        (en.areas || []).forEach(a => set.add(a));
+        // include legacy task labels too, so old data still offers suggestions
+        (en.tasks || []).forEach(t => { if (t.label) set.add(t.label); });
+      }
+    }));
+    return [...set].sort((a, b) => a.localeCompare(b));
   };
   const addExpense = (i) => {
     const updated = [...entries];
@@ -372,14 +408,17 @@ function FitterForm({ fitterName, onLogout, onSubmit, sites, tasks, allEntries, 
       if (e.hours === "" || e.hours === undefined || e.hours === null) { setError(`You haven't entered any hours for ${dayLabel}. Add the hours, or remove that day.`); return; }
       if (isNaN(h) || h <= 0) { setError(`Hours for ${dayLabel} must be a number greater than 0.`); return; }
       if (h > 24) { setError(`Hours for ${dayLabel} can't be more than 24 in a day.`); return; }
-      if (e.tasks.length === 0) { setError("Please select at least one task for each entry."); return; }
+      // Pull in any area still typed but not yet "added"
+      const draftedAreas = [...(e.areas || [])];
+      if ((e.areaDraft || "").trim() && !draftedAreas.some(a => a.toLowerCase() === e.areaDraft.trim().toLowerCase())) draftedAreas.push(e.areaDraft.trim());
+      if (draftedAreas.length === 0) { setError(`Please add at least one area worked for ${dayLabel}.`); return; }
+      e._areas = draftedAreas;
       for (const exp of (e.expenses || [])) {
         if (!exp.description.trim()) { setError("Please add a description for each expense."); return; }
         if (!exp.amount || isNaN(parseFloat(exp.amount)) || parseFloat(exp.amount) <= 0) { setError("Please enter a valid amount for each expense."); return; }
       }
     }
     const site = (id) => sites.find(s => s.id === id);
-    const taskLabel = (id) => tasks.find(t => t.id === id)?.name || id;
 
     const builtEntries = entries.map(e => {
       const h = parseFloat(e.hours);
@@ -393,7 +432,7 @@ function FitterForm({ fitterName, onLogout, onSubmit, sites, tasks, allEntries, 
         hours: h,
         normalHours: ot.normal,
         overtimeHours: ot.overtime,
-        tasks: e.tasks.map(id => ({ id, label: taskLabel(id) })),
+        areas: e._areas || e.areas || [],
         expenses: (e.expenses || []).map(exp => ({ description: exp.description.trim(), amount: parseFloat(exp.amount), receipt: exp.receipt || null }))
       };
     });
@@ -470,12 +509,12 @@ function FitterForm({ fitterName, onLogout, onSubmit, sites, tasks, allEntries, 
     }
   };
 
-  if (sites.length === 0 || tasks.length === 0) {
+  if (sites.length === 0) {
     return (
       <div style={{ textAlign: "center", padding: "48px 20px" }}>
         <div style={{ fontSize: 36, marginBottom: 12 }}>⚙️</div>
         <p style={{ fontFamily: "'DM Mono', monospace", fontSize: 13, color: "#888" }}>
-          {sites.length === 0 && tasks.length === 0 ? "No sites or tasks set up yet." : sites.length === 0 ? "No sites set up yet." : "No tasks set up yet."}
+          No sites set up yet.
           <br />Please ask Tom to add them via the Admin panel.
         </p>
       </div>
@@ -520,7 +559,7 @@ function FitterForm({ fitterName, onLogout, onSubmit, sites, tasks, allEntries, 
                 <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 13, color: "#C8A96E", fontWeight: 700 }}>{e.hours} hrs</span>
               </div>
               <div style={{ fontFamily: "'DM Mono', monospace", fontSize: 12, color: "#555" }}>{e.siteName} <span style={{ color: "#aaa" }}>·</span> {e.client}</div>
-              {e.tasks.length > 0 && <div style={{ fontFamily: "'DM Mono', monospace", fontSize: 11, color: "#888", marginTop: 4 }}>{e.tasks.map(t => t.label).join(", ")}</div>}
+              {entryAreas(e).length > 0 && <div style={{ fontFamily: "'DM Mono', monospace", fontSize: 11, color: "#888", marginTop: 4 }}>{entryAreas(e).join(", ")}</div>}
               {(e.expenses || []).length > 0 && e.expenses.map((x, xi) => (
                 <div key={xi} style={{ fontFamily: "'DM Mono', monospace", fontSize: 11, color: "#888", marginTop: 2 }}>💰 {x.description} — £{(x.amount || 0).toFixed(2)}</div>
               ))}
@@ -617,7 +656,7 @@ function FitterForm({ fitterName, onLogout, onSubmit, sites, tasks, allEntries, 
               <div style={{ padding: "14px" }}>
                 {/* Site */}
                 <label style={{ ...labelStyle, marginBottom: 4 }}>Site</label>
-                <select value={entry.siteId} onChange={e => { const u = [...entries]; u[i] = { ...u[i], siteId: e.target.value, tasks: [] }; setEntries(u); }} style={selectStyle}>
+                <select value={entry.siteId} onChange={e => { const u = [...entries]; u[i] = { ...u[i], siteId: e.target.value, areas: [], areaDraft: "" }; setEntries(u); }} style={selectStyle}>
                   <option value="">— Select site —</option>
                   {sites.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
                 </select>
@@ -634,27 +673,51 @@ function FitterForm({ fitterName, onLogout, onSubmit, sites, tasks, allEntries, 
                   placeholder="e.g. 7.5" type="number" min="0" max="24" step="0.5"
                   style={{ ...inputStyle, width: 120 }} />
 
-                {/* Tasks — only those for the selected site (plus any legacy all-site tasks) */}
-                <label style={{ ...labelStyle, marginTop: 14, marginBottom: 8 }}>Tasks completed</label>
-                <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
-                  {(() => {
-                    const siteTasks = tasks.filter(t => !t.siteId || t.siteId === entry.siteId);
-                    if (!entry.siteId) return <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 11, color: "#bbb" }}>Pick a site first to see its tasks.</span>;
-                    if (siteTasks.length === 0) return <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 11, color: "#bbb" }}>No tasks set for this site yet — ask Tom.</span>;
-                    return siteTasks.map(task => {
-                      const checked = entry.tasks.includes(task.id);
+                {/* Areas worked — free text, remembers what's been typed for this site */}
+                <label style={{ ...labelStyle, marginTop: 14, marginBottom: 8 }}>Areas worked</label>
+                {!entry.siteId ? (
+                  <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 11, color: "#bbb" }}>Pick a site first.</span>
+                ) : (
+                  <div>
+                    {/* Already-added areas for this day */}
+                    {(entry.areas || []).length > 0 && (
+                      <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 10 }}>
+                        {entry.areas.map(a => (
+                          <span key={a} style={{ display: "inline-flex", alignItems: "center", gap: 6, fontFamily: "'DM Mono', monospace", fontSize: 12, padding: "6px 10px", borderRadius: 20, background: "#1a1a1a", color: "#fff" }}>
+                            {a}
+                            <button onClick={() => removeArea(i, a)} style={{ background: "none", border: "none", color: "#fff", cursor: "pointer", fontSize: 13, padding: 0, lineHeight: 1, opacity: 0.7 }}>×</button>
+                          </span>
+                        ))}
+                      </div>
+                    )}
+                    {/* Type an area + Add */}
+                    <div style={{ display: "flex", gap: 8 }}>
+                      <input value={entry.areaDraft || ""} onChange={e => updateEntry(i, "areaDraft", e.target.value)}
+                        onKeyDown={e => { if (e.key === "Enter") { e.preventDefault(); addArea(i); } }}
+                        placeholder="e.g. Formal living, Entrance gallery…"
+                        style={{ ...inputStyle, flex: 1, marginBottom: 0 }} />
+                      <button onClick={() => addArea(i)} style={{ ...btnStyle, marginTop: 0, padding: "10px 16px", whiteSpace: "nowrap" }}>+ Add</button>
+                    </div>
+                    {/* Tap-suggestions from previous work at this site */}
+                    {(() => {
+                      const sugg = areaSuggestions(entry.siteId).filter(s => !(entry.areas || []).some(a => a.toLowerCase() === s.toLowerCase()));
+                      if (sugg.length === 0) return null;
                       return (
-                        <button key={task.id} onClick={() => toggleTask(i, task.id)}
-                          style={{ fontFamily: "'DM Mono', monospace", fontSize: 12, padding: "6px 12px", borderRadius: 20,
-                            border: `1px solid ${checked ? "#1a1a1a" : "#e0dbd4"}`,
-                            background: checked ? "#1a1a1a" : "transparent",
-                            color: checked ? "#fff" : "#888", cursor: "pointer" }}>
-                          {task.name}
-                        </button>
+                        <div style={{ marginTop: 10 }}>
+                          <div style={{ fontFamily: "'DM Mono', monospace", fontSize: 10, color: "#aaa", marginBottom: 6 }}>Used before on this job — tap to add:</div>
+                          <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                            {sugg.map(s => (
+                              <button key={s} onClick={() => addArea(i, s)}
+                                style={{ fontFamily: "'DM Mono', monospace", fontSize: 12, padding: "6px 12px", borderRadius: 20, border: "1px dashed #c9b896", background: "transparent", color: "#8a7a55", cursor: "pointer" }}>
+                                + {s}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
                       );
-                    });
-                  })()}
-                </div>
+                    })()}
+                  </div>
+                )}
 
                 {/* Expenses */}
                 <div style={{ marginTop: 16, borderTop: "1px dashed #e8e4de", paddingTop: 14 }}>
@@ -728,7 +791,6 @@ function FitterForm({ fitterName, onLogout, onSubmit, sites, tasks, allEntries, 
         allEntries={allEntries || []}
         lockedWeeks={lockedWeeks || []}
         sites={sites}
-        tasks={tasks}
         onDeleteRecord={onDeleteRecord}
         onUpdateRecord={onUpdateRecord}
       />
@@ -806,7 +868,7 @@ function MyPaySummary({ fitterName, allEntries, sites, rates }) {
 }
 
 // ---------- MY WEEK SUBMISSIONS (fitter self-service) ----------
-function MyWeekSubmissions({ fitterName, allEntries, lockedWeeks, sites, tasks, onDeleteRecord, onUpdateRecord }) {
+function MyWeekSubmissions({ fitterName, allEntries, lockedWeeks, sites, onDeleteRecord, onUpdateRecord }) {
   const [editingId, setEditingId] = useState(null);
   const [confirmDeleteId, setConfirmDeleteId] = useState(null);
   const [showHistory, setShowHistory] = useState(false);
@@ -839,7 +901,7 @@ function MyWeekSubmissions({ fitterName, allEntries, lockedWeeks, sites, tasks, 
             key={record.id}
             record={record}
             sites={sites}
-            tasks={tasks}
+            allEntries={allEntries}
             onSave={async (updated) => { await onUpdateRecord(record.id, updated); setEditingId(null); }}
             onCancel={() => setEditingId(null)}
           />
@@ -932,7 +994,7 @@ function AdminLogin({ onLogin }) {
 }
 
 // ---------- ADMIN DASHBOARD ----------
-function AdminDashboard({ allEntries, sites, tasks, rates, lockedWeeks, fittersList, pins, noIndigo, onSitesChange, onTasksChange, onRatesChange, onDeleteRecord, onUpdateRecord, onToggleLock, onFittersChange, onResetPin, onToggleIndigo, onLogout }) {
+function AdminDashboard({ allEntries, sites, rates, lockedWeeks, fittersList, pins, noIndigo, onSitesChange, onRatesChange, onDeleteRecord, onUpdateRecord, onToggleLock, onFittersChange, onResetPin, onToggleIndigo, onLogout }) {
   const [tab, setTab] = useState("submissions");
   return (
     <div>
@@ -941,7 +1003,7 @@ function AdminDashboard({ allEntries, sites, tasks, rates, lockedWeeks, fittersL
         <button onClick={onLogout} style={{ fontFamily: "'DM Mono', monospace", fontSize: 11, background: "none", border: "1px solid #ddd", borderRadius: 6, padding: "6px 12px", cursor: "pointer", color: "#888" }}>Log out</button>
       </div>
       <div style={{ display: "flex", gap: 4, marginBottom: 24, background: "#f5f2ed", borderRadius: 8, padding: 4 }}>
-        {[["submissions", "Timesheets"], ["report", "Invoices"], ["earnings", "Earnings"], ["rates", "Rates"], ["fitters", "Fitters"], ["sites", "Sites"], ["tasks", "Tasks"]].map(([key, label]) => (
+        {[["submissions", "Timesheets"], ["report", "Invoices"], ["earnings", "Earnings"], ["rates", "Rates"], ["fitters", "Fitters"], ["sites", "Sites"]].map(([key, label]) => (
           <button key={key} onClick={() => setTab(key)} style={{
             flex: 1, fontFamily: "'DM Mono', monospace", fontSize: 11, padding: "8px 0",
             border: "none", borderRadius: 6, cursor: "pointer",
@@ -950,13 +1012,12 @@ function AdminDashboard({ allEntries, sites, tasks, rates, lockedWeeks, fittersL
           }}>{label}</button>
         ))}
       </div>
-      {tab === "submissions" && <SubmissionsTab allEntries={allEntries} sites={sites} tasks={tasks} lockedWeeks={lockedWeeks} fittersList={fittersList} onDeleteRecord={onDeleteRecord} onUpdateRecord={onUpdateRecord} />}
+      {tab === "submissions" && <SubmissionsTab allEntries={allEntries} sites={sites} lockedWeeks={lockedWeeks} fittersList={fittersList} onDeleteRecord={onDeleteRecord} onUpdateRecord={onUpdateRecord} />}
       {tab === "report" && <InvoicesTab allEntries={allEntries} rates={rates} sites={sites} lockedWeeks={lockedWeeks} noIndigo={noIndigo} onToggleLock={onToggleLock} />}
       {tab === "earnings" && <EarningsTab allEntries={allEntries} rates={rates} sites={sites} noIndigo={noIndigo} />}
       {tab === "rates" && <RatesTab allEntries={allEntries} rates={rates} fittersList={fittersList} sites={sites} onRatesChange={onRatesChange} />}
       {tab === "fitters" && <FittersTab fittersList={fittersList} allEntries={allEntries} pins={pins} noIndigo={noIndigo} onFittersChange={onFittersChange} onResetPin={onResetPin} onToggleIndigo={onToggleIndigo} />}
       {tab === "sites" && <SitesTab sites={sites} onSitesChange={onSitesChange} />}
-      {tab === "tasks" && <TasksTab tasks={tasks} sites={sites} onTasksChange={onTasksChange} />}
     </div>
   );
 }
@@ -1627,7 +1688,7 @@ function InvoicesTab({ allEntries, rates, sites, lockedWeeks, noIndigo, onToggle
           r.entries.forEach(en => {
             if (en.client === client && en.date === d.iso) {
               const hrs = en.hours || 0; weekTotal += hrs;
-              const desc = (en.tasks || []).map(t => t.label).join(", ");
+              const desc = entryAreas(en).join(", ");
               rows.push(`<tr>
                 <td class="dcell"></td>
                 <td>${r.fitter}</td>
@@ -1913,7 +1974,7 @@ function InvoicesTab({ allEntries, rates, sites, lockedWeeks, noIndigo, onToggle
 }
 
 // ---------- SUBMISSIONS TAB ----------
-function SubmissionsTab({ allEntries, sites, tasks, lockedWeeks, fittersList, onDeleteRecord, onUpdateRecord }) {
+function SubmissionsTab({ allEntries, sites, lockedWeeks, fittersList, onDeleteRecord, onUpdateRecord }) {
   const [filterWeek, setFilterWeek] = useState("all");
   const [filterFitter, setFilterFitter] = useState("all");
   const [filterClient, setFilterClient] = useState("all");
@@ -2017,7 +2078,7 @@ function SubmissionsTab({ allEntries, sites, tasks, lockedWeeks, fittersList, on
                     <EditSubmission
                       record={record}
                       sites={sites}
-                      tasks={tasks}
+                      allEntries={allEntries}
                       onSave={async (updated) => { await onUpdateRecord(record.id, updated); setEditingId(null); }}
                       onCancel={() => setEditingId(null)}
                     />
@@ -2036,16 +2097,16 @@ function SubmissionsTab({ allEntries, sites, tasks, lockedWeeks, fittersList, on
                     {record.entries.map((entry, i) => (
                       <div key={i} style={{ padding: "10px 14px", borderBottom: "1px solid #f5f2ed", display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8 }}>
                         <div style={{ flex: 1 }}>
-                          <div style={{ display: "grid", gridTemplateColumns: "56px 1fr 1fr 46px", gap: 8, marginBottom: (entry.tasks?.length || entry.expenses?.length) ? 6 : 0 }}>
+                          <div style={{ display: "grid", gridTemplateColumns: "56px 1fr 1fr 46px", gap: 8, marginBottom: (entryAreas(entry).length || entry.expenses?.length) ? 6 : 0 }}>
                             <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 11, color: "#aaa" }}>{entry.day?.slice(0,3)}</span>
                             <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 12, color: "#555" }}>{entry.siteName}</span>
                             <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 12, color: "#C8A96E" }}>{entry.client}</span>
                             <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 12, color: "#1a1a1a", textAlign: "right" }}>{(entry.hours || 0)}h</span>
                           </div>
-                          {entry.tasks?.length > 0 && (
+                          {entryAreas(entry).length > 0 && (
                             <div style={{ display: "flex", gap: 4, flexWrap: "wrap", paddingLeft: 64, marginBottom: 4 }}>
-                              {entry.tasks.map(t => (
-                                <span key={t.id} style={{ fontFamily: "'DM Mono', monospace", fontSize: 10, padding: "2px 7px", background: "#f0ece6", borderRadius: 10, color: "#666" }}>{t.label}</span>
+                              {entryAreas(entry).map((a, ai) => (
+                                <span key={ai} style={{ fontFamily: "'DM Mono', monospace", fontSize: 10, padding: "2px 7px", background: "#f0ece6", borderRadius: 10, color: "#666" }}>{a}</span>
                               ))}
                             </div>
                           )}
@@ -2086,11 +2147,12 @@ function SubmissionsTab({ allEntries, sites, tasks, lockedWeeks, fittersList, on
 }
 
 // ---------- EDIT SUBMISSION ----------
-function EditSubmission({ record, sites, tasks, onSave, onCancel }) {
+function EditSubmission({ record, sites, allEntries, onSave, onCancel }) {
   const [entries, setEntries] = useState(record.entries.map(e => ({
     ...e,
     hours: String(e.hours ?? ""),
-    tasks: (e.tasks || []).map(t => t.id),
+    areas: entryAreas(e),
+    areaDraft: "",
     expenses: (e.expenses || []).map(x => ({ ...x, amount: String(x.amount ?? "") }))
   })));
   const [error, setError] = useState("");
@@ -2098,9 +2160,27 @@ function EditSubmission({ record, sites, tasks, onSave, onCancel }) {
   const updateEntry = (i, field, value) => {
     const u = [...entries]; u[i] = { ...u[i], [field]: value }; setEntries(u);
   };
-  const toggleTask = (i, taskId) => {
-    const cur = entries[i].tasks;
-    updateEntry(i, "tasks", cur.includes(taskId) ? cur.filter(t => t !== taskId) : [...cur, taskId]);
+  const addArea = (i, value) => {
+    const name = (value ?? entries[i].areaDraft ?? "").trim();
+    if (!name) return;
+    const u = [...entries];
+    const existing = u[i].areas || [];
+    if (!existing.some(a => a.toLowerCase() === name.toLowerCase())) u[i] = { ...u[i], areas: [...existing, name], areaDraft: "" };
+    else u[i] = { ...u[i], areaDraft: "" };
+    setEntries(u);
+  };
+  const removeArea = (i, name) => {
+    const u = [...entries];
+    u[i] = { ...u[i], areas: (u[i].areas || []).filter(a => a !== name) };
+    setEntries(u);
+  };
+  const areaSuggestions = (siteId) => {
+    if (!siteId) return [];
+    const set = new Set();
+    (allEntries || []).forEach(r => (r.entries || []).forEach(en => {
+      if (en.siteId === siteId) { entryAreas(en).forEach(a => set.add(a)); }
+    }));
+    return [...set].sort((a, b) => a.localeCompare(b));
   };
   const updateExpense = (i, ei, field, value) => {
     const u = [...entries];
@@ -2124,13 +2204,15 @@ function EditSubmission({ record, sites, tasks, onSave, onCancel }) {
       if (!e.hours || isNaN(h) || h <= 0 || h > 24) { setError("Please enter valid hours (0–24) for each day."); return; }
     }
     const site = (id) => sites.find(s => s.id === id);
-    const taskLabel = (id) => tasks.find(t => t.id === id)?.name || id;
     const updated = {
       ...record,
       entries: entries.map(e => {
         const s = site(e.siteId);
         const h = parseFloat(e.hours);
         const ot = splitOvertime(e.day, h, e.date);
+        // include any un-added draft
+        const areas = [...(e.areas || [])];
+        if ((e.areaDraft || "").trim() && !areas.some(a => a.toLowerCase() === e.areaDraft.trim().toLowerCase())) areas.push(e.areaDraft.trim());
         return {
           date: e.date,
           day: e.day,
@@ -2140,7 +2222,7 @@ function EditSubmission({ record, sites, tasks, onSave, onCancel }) {
           hours: h,
           normalHours: ot.normal,
           overtimeHours: ot.overtime,
-          tasks: e.tasks.map(id => ({ id, label: taskLabel(id) })),
+          areas,
           expenses: (e.expenses || []).map(x => ({ description: x.description, amount: parseFloat(x.amount) || 0, receipt: x.receipt || null }))
         };
       })
@@ -2190,7 +2272,7 @@ function EditSubmission({ record, sites, tasks, onSave, onCancel }) {
               </div>
 
               <label style={{ ...labelStyle, marginBottom: 4 }}>Site</label>
-              <select value={entry.siteId} onChange={e => { const u = [...entries]; u[i] = { ...u[i], siteId: e.target.value, tasks: [] }; setEntries(u); }} style={{ ...selectStyle, fontSize: 12 }}>
+              <select value={entry.siteId} onChange={e => { const u = [...entries]; u[i] = { ...u[i], siteId: e.target.value, areas: [], areaDraft: "" }; setEntries(u); }} style={{ ...selectStyle, fontSize: 12 }}>
                 <option value="">— Select site —</option>
                 {sites.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
               </select>
@@ -2201,18 +2283,40 @@ function EditSubmission({ record, sites, tasks, onSave, onCancel }) {
               <label style={{ ...labelStyle, marginTop: 12, marginBottom: 4 }}>Hours</label>
               <input value={entry.hours} onChange={e => updateEntry(i, "hours", e.target.value)} type="number" min="0" max="24" step="0.5" style={{ ...inputStyle, width: 100, fontSize: 12 }} />
 
-              <label style={{ ...labelStyle, marginTop: 12, marginBottom: 6 }}>Tasks</label>
-              <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-                {tasks.filter(task => !task.siteId || task.siteId === entry.siteId).map(task => {
-                  const checked = entry.tasks.includes(task.id);
-                  return (
-                    <button key={task.id} onClick={() => toggleTask(i, task.id)} style={{
-                      fontFamily: "'DM Mono', monospace", fontSize: 11, padding: "5px 10px", borderRadius: 16,
-                      border: `1px solid ${checked ? "#1a1a1a" : "#e0dbd4"}`, background: checked ? "#1a1a1a" : "transparent",
-                      color: checked ? "#fff" : "#888", cursor: "pointer" }}>{task.name}</button>
-                  );
-                })}
-              </div>
+              <label style={{ ...labelStyle, marginTop: 12, marginBottom: 6 }}>Areas worked</label>
+              {!entry.siteId ? (
+                <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 11, color: "#bbb" }}>Pick a site first.</span>
+              ) : (
+                <div>
+                  {(entry.areas || []).length > 0 && (
+                    <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 8 }}>
+                      {entry.areas.map(a => (
+                        <span key={a} style={{ display: "inline-flex", alignItems: "center", gap: 5, fontFamily: "'DM Mono', monospace", fontSize: 11, padding: "5px 9px", borderRadius: 16, background: "#1a1a1a", color: "#fff" }}>
+                          {a}
+                          <button onClick={() => removeArea(i, a)} style={{ background: "none", border: "none", color: "#fff", cursor: "pointer", fontSize: 12, padding: 0, lineHeight: 1, opacity: 0.7 }}>×</button>
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                  <div style={{ display: "flex", gap: 6 }}>
+                    <input value={entry.areaDraft || ""} onChange={e => updateEntry(i, "areaDraft", e.target.value)}
+                      onKeyDown={e => { if (e.key === "Enter") { e.preventDefault(); addArea(i); } }}
+                      placeholder="Type an area…" style={{ ...inputStyle, flex: 1, marginBottom: 0, fontSize: 12 }} />
+                    <button onClick={() => addArea(i)} style={{ ...btnStyle, marginTop: 0, padding: "8px 14px", fontSize: 12, whiteSpace: "nowrap" }}>+ Add</button>
+                  </div>
+                  {(() => {
+                    const sugg = areaSuggestions(entry.siteId).filter(s => !(entry.areas || []).some(a => a.toLowerCase() === s.toLowerCase()));
+                    if (sugg.length === 0) return null;
+                    return (
+                      <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 8 }}>
+                        {sugg.map(s => (
+                          <button key={s} onClick={() => addArea(i, s)} style={{ fontFamily: "'DM Mono', monospace", fontSize: 11, padding: "5px 10px", borderRadius: 16, border: "1px dashed #c9b896", background: "transparent", color: "#8a7a55", cursor: "pointer" }}>+ {s}</button>
+                        ))}
+                      </div>
+                    );
+                  })()}
+                </div>
+              )}
 
               {(entry.expenses || []).length > 0 && (
                 <div style={{ marginTop: 12 }}>
@@ -2299,94 +2403,12 @@ function SitesTab({ sites, onSitesChange }) {
   );
 }
 
-// ---------- TASKS TAB ----------
-function TasksTab({ tasks, sites, onTasksChange }) {
-  const [taskName, setTaskName] = useState("");
-  const [siteId, setSiteId] = useState("");
-  const [error, setError] = useState("");
-
-  const siteOptions = [...(sites || [])].sort((a, b) => a.name.localeCompare(b.name));
-
-  const addTask = async () => {
-    if (!siteId) { setError("Pick which site this task is for."); return; }
-    if (!taskName.trim()) { setError("Enter a task name."); return; }
-    if (tasks.find(t => t.siteId === siteId && t.name.toLowerCase() === taskName.trim().toLowerCase())) { setError("That task already exists for this site."); return; }
-    await onTasksChange([...tasks, { id: Date.now().toString(), name: taskName.trim(), siteId }]);
-    setTaskName(""); setError("");
-  };
-
-  // Group tasks by site for display. Tasks with no siteId are "all sites" (legacy).
-  const legacy = tasks.filter(t => !t.siteId);
-  const bySite = siteOptions.map(s => ({ site: s, list: tasks.filter(t => t.siteId === s.id) }));
-
-  return (
-    <div>
-      <p style={{ fontFamily: "'DM Mono', monospace", fontSize: 12, color: "#888", marginBottom: 20 }}>Add the tasks for each job. Fitters only see the tasks for the site they've picked.</p>
-      <div style={{ background: "#f5f2ed", borderRadius: 10, padding: 16, marginBottom: 20 }}>
-        <div style={{ fontFamily: "'DM Mono', monospace", fontSize: 11, color: "#888", textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: 12 }}>Add Task</div>
-        <label style={labelStyle}>Site</label>
-        <select value={siteId} onChange={e => { setSiteId(e.target.value); setError(""); }} style={selectStyle}>
-          <option value="">— Select site —</option>
-          {siteOptions.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
-        </select>
-        <label style={{ ...labelStyle, marginTop: 12 }}>Task Name</label>
-        <input value={taskName} onChange={e => { setTaskName(e.target.value); setError(""); }}
-          onKeyDown={e => e.key === "Enter" && addTask()}
-          placeholder="e.g. Kitchen, Drawing room, Hall…" style={inputStyle} />
-        {error && <p style={{ color: "#c0392b", fontFamily: "'DM Mono', monospace", fontSize: 12, marginTop: 8, marginBottom: 0 }}>{error}</p>}
-        <button onClick={addTask} style={{ ...btnStyle, marginTop: 12, padding: "10px 18px" }}>+ Add Task</button>
-        {siteOptions.length === 0 && <p style={{ fontFamily: "'DM Mono', monospace", fontSize: 11, color: "#b7860b", marginTop: 8, marginBottom: 0 }}>Add a site in the Sites tab first.</p>}
-      </div>
-
-      {tasks.length === 0 ? (
-        <p style={{ textAlign: "center", fontFamily: "'DM Mono', monospace", fontSize: 13, color: "#bbb", padding: "24px 0" }}>No tasks added yet.</p>
-      ) : (
-        <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-          {legacy.length > 0 && (
-            <div>
-              <div style={{ fontFamily: "'DM Mono', monospace", fontSize: 11, color: "#b7860b", marginBottom: 8 }}>All sites (added before per-site tasks — reassign by re-adding under a site, then removing here)</div>
-              <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
-                {legacy.map(t => (
-                  <div key={t.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 12px", border: "1px solid #e8e4de", borderRadius: 20, background: "#fff" }}>
-                    <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 12, color: "#1a1a1a" }}>{t.name}</span>
-                    <button onClick={() => onTasksChange(tasks.filter(x => x.id !== t.id))} style={{ background: "none", border: "none", color: "#ccc", cursor: "pointer", fontSize: 14, padding: 0, lineHeight: 1 }}>×</button>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-          {bySite.map(({ site, list }) => (
-            <div key={site.id}>
-              <div style={{ fontFamily: "'DM Mono', monospace", fontSize: 12, color: "#1a1a1a", marginBottom: 8 }}>
-                {site.name} <span style={{ color: "#C8A96E" }}>→ {site.client}</span>
-              </div>
-              {list.length === 0 ? (
-                <p style={{ fontFamily: "'DM Mono', monospace", fontSize: 11, color: "#bbb", margin: 0 }}>No tasks yet for this site.</p>
-              ) : (
-                <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
-                  {list.map(t => (
-                    <div key={t.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 12px", border: "1px solid #e8e4de", borderRadius: 20, background: "#fff" }}>
-                      <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 12, color: "#1a1a1a" }}>{t.name}</span>
-                      <button onClick={() => onTasksChange(tasks.filter(x => x.id !== t.id))} style={{ background: "none", border: "none", color: "#ccc", cursor: "pointer", fontSize: 14, padding: 0, lineHeight: 1 }}>×</button>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
-
 // ---------- MAIN ----------
 export default function App() {
   const [view, setView] = useState("fitter");
   const [fitterName, setFitterName] = useState(null);
   const [allEntries, setAllEntries] = useState([]);
   const [sites, setSites] = useState([]);
-  const [tasks, setTasks] = useState([]);
   const [rates, setRates] = useState({});
   const [lockedWeeks, setLockedWeeks] = useState([]);
   const [fittersList, setFittersList] = useState([]);
@@ -2400,11 +2422,10 @@ export default function App() {
       load("finefit_entries"), loadStr("finefit_fitter_name"),
       load("finefit_sites"), load("finefit_tasks"), load("finefit_rates"),
       load("finefit_locked_weeks"), load("finefit_fitters"), load("finefit_pins"), load("finefit_no_indigo"),
-    ]).then(([entries, name, savedSites, savedTasks, savedRates, savedLocks, savedFitters, savedPins, savedNoIndigo]) => {
+    ]).then(([entries, name, savedSites, _savedTasks, savedRates, savedLocks, savedFitters, savedPins, savedNoIndigo]) => {
       setAllEntries(entries || []);
       if (name) setFitterName(name);
       setSites(savedSites || []);
-      setTasks(savedTasks || []);
       setRates(savedRates || {});
       setLockedWeeks(savedLocks || []);
       setFittersList(savedFitters || []);
@@ -2415,7 +2436,6 @@ export default function App() {
   }, []);
 
   const handleSitesChange = async (u) => { setSites(u); await save("finefit_sites", u); };
-  const handleTasksChange = async (u) => { setTasks(u); await save("finefit_tasks", u); };
   const handleRatesChange = async (u) => { setRates(u); await save("finefit_rates", u); };
   const handleSubmit = async (record) => { const u = [...allEntries, record]; setAllEntries(u); await save("finefit_entries", u); };
   const handleDeleteRecord = async (recordId) => { const u = allEntries.filter(r => r.id !== recordId); setAllEntries(u); await save("finefit_entries", u); };
@@ -2450,14 +2470,14 @@ export default function App() {
             <p style={{ textAlign: "center", fontFamily: "'DM Mono', monospace", color: "#aaa" }}>Loading…</p>
           ) : view === "fitter" ? (
             fitterName
-              ? <FitterForm fitterName={fitterName} onLogout={handleFitterLogout} onSubmit={handleSubmit} sites={sites} tasks={tasks}
+              ? <FitterForm fitterName={fitterName} onLogout={handleFitterLogout} onSubmit={handleSubmit} sites={sites}
                   allEntries={allEntries} lockedWeeks={lockedWeeks} rates={rates} onDeleteRecord={handleDeleteRecord} onUpdateRecord={handleUpdateRecord} />
               : <FitterLogin fittersList={fittersList} pins={pins} onSetPin={handleSetPin} onLogin={async (n) => { await saveStr("finefit_fitter_name", n); setFitterName(n); }} />
           ) : view === "adminLogin" ? (
             <AdminLogin onLogin={() => setView("admin")} />
           ) : (
-            <AdminDashboard allEntries={allEntries} sites={sites} tasks={tasks} rates={rates}
-              lockedWeeks={lockedWeeks} fittersList={fittersList} pins={pins} noIndigo={noIndigo} onSitesChange={handleSitesChange} onTasksChange={handleTasksChange}
+            <AdminDashboard allEntries={allEntries} sites={sites} rates={rates}
+              lockedWeeks={lockedWeeks} fittersList={fittersList} pins={pins} noIndigo={noIndigo} onSitesChange={handleSitesChange}
               onRatesChange={handleRatesChange} onDeleteRecord={handleDeleteRecord} onFittersChange={handleFittersChange} onResetPin={handleResetPin} onToggleIndigo={handleToggleIndigo}
               onUpdateRecord={handleUpdateRecord} onToggleLock={handleToggleLock} onLogout={() => setView("fitter")} />
           )}
