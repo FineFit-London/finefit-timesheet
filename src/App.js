@@ -289,7 +289,14 @@ function FitterLogin({ fittersList, pins, onSetPin, onLogin }) {
 // ---------- FITTER FORM ----------
 function FitterForm({ fitterName, onLogout, onSubmit, sites, allEntries, lockedWeeks, rates, onDeleteRecord, onUpdateRecord }) {
   const periodDays = getPeriodDays();
-  const emptyEntry = () => ({ date: periodDays[0].iso, day: periodDays[0].dayName, siteId: "", hours: "", areas: [], areaDraft: "", expenses: [] });
+  // Days this fitter has already submitted this fortnight, so we can default to the next one
+  const submittedIsos = new Set(
+    (allEntries || [])
+      .filter(r => r.fitter === fitterName && r.weekKey === getWeekKey())
+      .flatMap(r => (r.entries || []).map(e => e.date))
+  );
+  const firstFreeDay = periodDays.find(d => !submittedIsos.has(d.iso)) || periodDays[0];
+  const emptyEntry = (day) => { const d = day || firstFreeDay; return { date: d.iso, day: d.dayName, siteId: "", hours: "", areas: [], areaDraft: "", expenses: [] }; };
   const emptyExpense = () => ({ description: "", amount: "", receipt: null });
   const draftKey = `finefit_draft_${fitterName}`;
 
@@ -395,7 +402,18 @@ function FitterForm({ fitterName, onLogout, onSubmit, sites, allEntries, lockedW
     updated[i] = { ...updated[i], expenses: (updated[i].expenses || []).filter((_, idx) => idx !== ei) };
     setEntries(updated);
   };
-  const addEntry = () => setEntries([...entries, emptyEntry()]);
+  const addEntry = () => {
+    // Start the new day on the one after the latest day already added,
+    // skipping any the fitter has already submitted this fortnight.
+    const latest = entries.reduce((acc, e) => (e.date && e.date > acc ? e.date : acc), "");
+    const from = periodDays.findIndex(d => d.iso === latest);
+    const used = new Set([...submittedIsos, ...entries.map(e => e.date)]);
+    const next = periodDays.slice(from + 1).find(d => !used.has(d.iso))
+      || periodDays.find(d => !used.has(d.iso))
+      || periodDays[Math.min(from + 1, periodDays.length - 1)]
+      || periodDays[0];
+    setEntries([...entries, emptyEntry(next)]);
+  };
   const removeEntry = (i) => setEntries(entries.filter((_, idx) => idx !== i));
 
   // Hours already submitted by this fitter this week (for running total)
@@ -2336,15 +2354,26 @@ function SubmissionsTab({ allEntries, sites, lockedWeeks, fittersList, onDeleteR
                   </div>
                 ) : (
                   <div key={record.id}>
-                    {confirmDeleteId === record.id && (
-                      <div style={{ padding: "12px 14px", background: "#fff5f5", borderBottom: "1px solid #f5c6cb", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                        <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 12, color: "#c0392b" }}>Delete {record.entries.length === 1 ? "this day" : "these " + record.entries.length + " days"}? Can't be undone.</span>
-                        <div style={{ display: "flex", gap: 8 }}>
-                          <button onClick={() => setConfirmDeleteId(null)} style={{ fontFamily: "'DM Mono', monospace", fontSize: 11, background: "none", border: "1px solid #ddd", borderRadius: 6, padding: "5px 12px", cursor: "pointer", color: "#888" }}>Cancel</button>
-                          <button onClick={async () => { await onDeleteRecord(record.id); setConfirmDeleteId(null); }} style={{ fontFamily: "'DM Mono', monospace", fontSize: 11, background: "#c0392b", border: "none", borderRadius: 6, padding: "5px 12px", cursor: "pointer", color: "#fff" }}>Yes, delete</button>
+                    {typeof confirmDeleteId === "string" && confirmDeleteId.startsWith(record.id + "::") && (() => {
+                      const di = parseInt(confirmDeleteId.split("::")[1], 10);
+                      const dEntry = record.entries[di];
+                      const lastOne = record.entries.length === 1;
+                      return (
+                        <div style={{ padding: "12px 14px", background: "#fff5f5", borderBottom: "1px solid #f5c6cb", display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10 }}>
+                          <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 12, color: "#c0392b" }}>
+                            Delete {dEntry?.day?.slice(0,3)} {dEntry?.date} ({dEntry?.hours || 0}h at {dEntry?.siteName})? Can&apos;t be undone.
+                          </span>
+                          <div style={{ display: "flex", gap: 8, flexShrink: 0 }}>
+                            <button onClick={() => setConfirmDeleteId(null)} style={{ fontFamily: "'DM Mono', monospace", fontSize: 11, background: "none", border: "1px solid #ddd", borderRadius: 6, padding: "5px 12px", cursor: "pointer", color: "#888" }}>Cancel</button>
+                            <button onClick={async () => {
+                              if (lastOne) await onDeleteRecord(record.id);
+                              else await onUpdateRecord(record.id, { ...record, entries: record.entries.filter((_, idx) => idx !== di) });
+                              setConfirmDeleteId(null);
+                            }} style={{ fontFamily: "'DM Mono', monospace", fontSize: 11, background: "#c0392b", border: "none", borderRadius: 6, padding: "5px 12px", cursor: "pointer", color: "#fff" }}>Yes, delete</button>
+                          </div>
                         </div>
-                      </div>
-                    )}
+                      );
+                    })()}
                     {record.entries.map((entry, i) => (
                       <div key={i} style={{ padding: "10px 14px", borderBottom: "1px solid #f5f2ed", display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8 }}>
                         <div style={{ flex: 1 }}>
@@ -2377,11 +2406,11 @@ function SubmissionsTab({ allEntries, sites, lockedWeeks, fittersList, onDeleteR
                             </div>
                           )}
                         </div>
-                        {/* Edit/Delete act on the whole submission; show them once per submission, on its first day row */}
-                        {i === 0 && !locked && (
+                        {/* Edit opens the whole submission; Del removes just this day */}
+                        {!locked && (
                           <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
                             <button onClick={() => setEditingId(record.id)} style={{ fontFamily: "'DM Mono', monospace", fontSize: 10, background: "none", border: "1px solid #e0dbd4", borderRadius: 6, padding: "3px 8px", cursor: "pointer", color: "#888" }}>Edit</button>
-                            <button onClick={() => setConfirmDeleteId(record.id)} style={{ fontFamily: "'DM Mono', monospace", fontSize: 10, background: "none", border: "1px solid #f5c6cb", borderRadius: 6, padding: "3px 8px", cursor: "pointer", color: "#c0392b" }}>Del</button>
+                            <button onClick={() => setConfirmDeleteId(`${record.id}::${i}`)} style={{ fontFamily: "'DM Mono', monospace", fontSize: 10, background: "none", border: "1px solid #f5c6cb", borderRadius: 6, padding: "3px 8px", cursor: "pointer", color: "#c0392b" }}>Del</button>
                           </div>
                         )}
                       </div>
