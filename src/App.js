@@ -1326,9 +1326,27 @@ function ExpensesTab({ companyExpenses, sites, onCompanyExpensesChange }) {
   const [date, setDate] = useState(dateKey(new Date()));
   const [description, setDescription] = useState("");
   const [amount, setAmount] = useState("");
+  const [receipt, setReceipt] = useState(null);
   const [error, setError] = useState("");
+  const fileRef = useRef(null);
 
   const clients = [...new Set((sites || []).map(s => s.client).filter(Boolean))].sort();
+
+  const handleReceipt = (file) => {
+    if (!file) return;
+    // Receipts are stored inline in the database, which has a ~1MB per-record limit.
+    if (file.size > 900 * 1024) {
+      setError("That file is a bit large (over ~0.9MB). Please use a smaller photo or PDF.");
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      const isPdf = file.type === "application/pdf" || /\.pdf$/i.test(file.name || "");
+      setReceipt({ data: ev.target.result, type: isPdf ? "pdf" : "image", name: file.name || "receipt" });
+      setError("");
+    };
+    reader.readAsDataURL(file);
+  };
 
   const addExpense = async () => {
     if (!client) { setError("Pick which company this is for."); return; }
@@ -1337,9 +1355,10 @@ function ExpensesTab({ companyExpenses, sites, onCompanyExpensesChange }) {
     if (isNaN(amt) || amt <= 0) { setError("Enter a valid amount."); return; }
     if (!date) { setError("Pick the date it was incurred."); return; }
     await onCompanyExpensesChange([...(companyExpenses || []), {
-      id: Date.now().toString(), client, date, description: description.trim(), amount: amt,
+      id: Date.now().toString(), client, date, description: description.trim(), amount: amt, receipt: receipt || null,
     }]);
-    setDescription(""); setAmount(""); setError("");
+    setDescription(""); setAmount(""); setReceipt(null); setError("");
+    if (fileRef.current) fileRef.current.value = "";
   };
 
   // Group for display, newest first
@@ -1384,6 +1403,24 @@ function ExpensesTab({ companyExpenses, sites, onCompanyExpensesChange }) {
             </div>
           </div>
         </div>
+        {/* Receipt (optional) */}
+        <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 10 }}>
+          <input type="file" accept="image/*,application/pdf,.pdf" ref={fileRef} style={{ display: "none" }}
+            onChange={e => handleReceipt(e.target.files[0])} />
+          <button onClick={() => fileRef.current?.click()}
+            style={{ fontFamily: "'DM Mono', monospace", fontSize: 11, background: "none", border: "1px dashed #e0dbd4", borderRadius: 6, padding: "7px 12px", cursor: "pointer", color: "#888" }}>
+            📎 {receipt ? "Receipt attached ✓" : "Attach receipt (photo or file)"}
+          </button>
+          {receipt && (
+            <>
+              {receiptIsPdf(receipt)
+                ? <span onClick={() => openReceipt(receipt)} title={receiptName(receipt)} style={{ fontFamily: "'DM Mono', monospace", fontSize: 10, color: "#888", border: "1px solid #e0dbd4", borderRadius: 4, padding: "6px 8px", cursor: "pointer" }}>📄 PDF</span>
+                : <img src={receiptSrc(receipt)} alt="receipt" onClick={() => openReceipt(receipt)} style={{ height: 34, width: 34, objectFit: "cover", borderRadius: 4, border: "1px solid #e0dbd4", cursor: "pointer" }} />}
+              <button onClick={() => { setReceipt(null); if (fileRef.current) fileRef.current.value = ""; }}
+                style={{ background: "none", border: "none", color: "#c0392b", cursor: "pointer", fontFamily: "'DM Mono', monospace", fontSize: 11 }}>Remove</button>
+            </>
+          )}
+        </div>
         {error && <p style={{ color: "#c0392b", fontFamily: "'DM Mono', monospace", fontSize: 12, margin: "8px 0 0 0" }}>{error}</p>}
         <button onClick={addExpense} style={{ ...btnStyle, marginTop: 12, padding: "10px 18px" }}>+ Add Expense</button>
         {clients.length === 0 && <p style={{ fontFamily: "'DM Mono', monospace", fontSize: 11, color: "#b7860b", margin: "8px 0 0 0" }}>Add a site with a client in the Sites tab first.</p>}
@@ -1412,6 +1449,11 @@ function ExpensesTab({ companyExpenses, sites, onCompanyExpensesChange }) {
                         </span>
                       </div>
                       <div style={{ display: "flex", alignItems: "center", gap: 10, flexShrink: 0 }}>
+                        {e.receipt
+                          ? (receiptIsPdf(e.receipt)
+                              ? <span onClick={() => openReceipt(e.receipt)} title={receiptName(e.receipt)} style={{ fontFamily: "'DM Mono', monospace", fontSize: 9, color: "#888", border: "1px solid #e0dbd4", borderRadius: 4, padding: "3px 6px", cursor: "pointer" }}>📄</span>
+                              : <img src={receiptSrc(e.receipt)} alt="" onClick={() => openReceipt(e.receipt)} style={{ width: 26, height: 26, objectFit: "cover", borderRadius: 4, border: "1px solid #e0dbd4", cursor: "pointer" }} />)
+                          : <span title="No receipt attached" style={{ fontFamily: "'DM Mono', monospace", fontSize: 9, color: "#ccc" }}>no receipt</span>}
                         <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 12, color: "#1a1a1a" }}>{toGBP(e.amount || 0)}</span>
                         <button onClick={() => onCompanyExpensesChange((companyExpenses || []).filter(x => x.id !== e.id))}
                           style={{ background: "none", border: "1px solid #eee", borderRadius: 6, padding: "3px 9px", fontFamily: "'DM Mono', monospace", fontSize: 11, color: "#aaa", cursor: "pointer" }}>Remove</button>
@@ -1677,6 +1719,7 @@ function InvoicesTab({ allEntries, rates, sites, lockedWeeks, noIndigo, billedJo
     ).filter(Boolean)
   )].sort();
 
+
   const clientTotal = hourlyLines.reduce((a, l) => a + l.clientCost, 0) + billedFixedTotal + extrasTotal;
   const allExpenses = lines.flatMap(l => l.expenses);
   const fitterExpensesTotal = allExpenses.reduce((a, e) => a + (e.amount || 0), 0);
@@ -1689,6 +1732,36 @@ function InvoicesTab({ allEntries, rates, sites, lockedWeeks, noIndigo, billedJo
   });
   const companyExpensesTotal = companyExpenseLines.reduce((a, e) => a + (e.amount || 0), 0);
   const totalExpenses = fitterExpensesTotal + companyExpensesTotal;
+
+  // Full expense detail (dates kept) for the client expenses sheet:
+  // fitter-logged receipts plus Tom's own costs for that company.
+  const expenseDetail = (client) => {
+    const out = [];
+    filtered.forEach(r => (r.entries || []).forEach(en => {
+      if (client && en.client !== client) return;
+      (en.expenses || []).forEach(x => out.push({
+        date: en.date, description: x.description, who: r.fitter, site: en.siteName, amount: x.amount || 0, receipt: x.receipt || null,
+      }));
+    }));
+    (companyExpenses || []).forEach(e => {
+      if (client && e.client !== client) return;
+      if (filterWeek !== "all") {
+        if (!e.date) return;
+        if (dateKey(getPeriodStart(new Date(e.date + "T00:00:00"))) !== filterWeek) return;
+      }
+      out.push({ date: e.date, description: e.description, who: "FineFit", site: "", amount: e.amount || 0, receipt: e.receipt || null });
+    });
+    return out.sort((a, b) => (a.date || "").localeCompare(b.date || ""));
+  };
+
+  // Clients that have any expense in this period
+  const expenseClients = [...new Set([
+    ...filtered.flatMap(r => (r.entries || []).filter(en => (en.expenses || []).length > 0).map(en => en.client)),
+    ...(companyExpenses || []).filter(e => filterWeek === "all" || (e.date && dateKey(getPeriodStart(new Date(e.date + "T00:00:00"))) === filterWeek)).map(e => e.client),
+  ])].filter(Boolean).filter(c => filterClient === "all" || c === filterClient).sort();
+
+  // Every client needing documents this fortnight (work and/or expenses)
+  const docClients = [...new Set([...timesheetClients, ...expenseClients])].sort();
   const clientGrandTotal = clientTotal + totalExpenses;
 
   // Indigo pays only fitters not marked "not paid via Indigo" (e.g. Tom).
@@ -1902,6 +1975,83 @@ function InvoicesTab({ allEntries, rates, sites, lockedWeeks, noIndigo, billedJo
     const csv = [headers, ...rows].map(r => r.map(v => `"${String(v).replace(/"/g, '""')}"`).join(",")).join("\n");
     const blob = new Blob([csv], { type: "text/csv" });
     const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = `${invoiceNum}_xero.csv`; a.click();
+  };
+
+  // Client expenses sheet — itemised costs with a total, to send alongside the invoice.
+  const printExpensesSheet = (onlyClient = null) => {
+    const targets = onlyClient ? [onlyClient] : expenseClients;
+    if (targets.length === 0) { alert("No expenses to show for this selection."); return; }
+
+    const sheets = targets.map(client => {
+      const items = expenseDetail(client);
+      if (items.length === 0) return "";
+      const total = items.reduce((a, x) => a + (x.amount || 0), 0);
+      const rows = items.map(x => `
+        <tr>
+          <td>${x.date ? new Date(x.date + "T00:00:00").toLocaleDateString("en-GB") : ""}</td>
+          <td>${x.description || ""}</td>
+          <td>${x.who || ""}${x.site ? ` <span style="color:#888">(${x.site})</span>` : ""}</td>
+          <td class="num">£${(x.amount || 0).toFixed(2)}</td>
+        </tr>`).join("");
+      // Image receipts appended as proof; PDFs are listed by name instead.
+      const imgs = items.filter(x => x.receipt && !receiptIsPdf(x.receipt));
+      const pdfs = items.filter(x => x.receipt && receiptIsPdf(x.receipt));
+      const gallery = imgs.length > 0 ? `
+        <div class="sec">Receipts</div>
+        <div class="gal">${imgs.map(x => `
+          <div class="cell">
+            <img src="${receiptSrc(x.receipt)}" />
+            <div class="cap">${x.description || ""} — £${(x.amount || 0).toFixed(2)}</div>
+          </div>`).join("")}</div>` : "";
+      const pdfList = pdfs.length > 0 ? `
+        <div class="sec">Receipts supplied separately (PDF)</div>
+        <ul class="pdfs">${pdfs.map(x => `<li>${x.description || ""} — £${(x.amount || 0).toFixed(2)} (${receiptName(x.receipt)})</li>`).join("")}</ul>` : "";
+
+      return `
+        <div class="sheet">
+          <div class="head">
+            <div><h1>FineFit</h1><div class="sub">LONDON</div></div>
+            <div class="meta">
+              <div class="t">EXPENSES</div>
+              <div>${client}</div>
+              <div>${filterWeek === "all" ? "All periods" : periodLabelShort(filterWeek)}</div>
+            </div>
+          </div>
+          <table class="grid">
+            <thead><tr><th>Date</th><th>Description</th><th>Incurred by</th><th class="num">Amount</th></tr></thead>
+            <tbody>${rows}</tbody>
+            <tfoot><tr><td colspan="3" class="tot">Total expenses</td><td class="num tot">£${total.toFixed(2)}</td></tr></tfoot>
+          </table>
+          <p class="note">These expenses are included in the invoice for this period as a single &ldquo;Materials &amp; Expenses&rdquo; total.</p>
+          ${gallery}${pdfList}
+        </div>`;
+    }).join("");
+
+    const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>FineFit Expenses - ${targets.length === 1 ? targets[0] : "All clients"} - ${filterWeek === "all" ? "All periods" : periodLabelShort(filterWeek)}</title>
+      <style>
+        *{box-sizing:border-box;} body{font-family:Arial,Helvetica,sans-serif;color:#1a1a1a;margin:40px;font-size:13px;}
+        .sheet{page-break-after:always;}
+        .head{display:flex;justify-content:space-between;align-items:flex-start;border-bottom:1px solid #C8A96E;padding-bottom:10px;margin-bottom:22px;}
+        h1{font-size:28px;letter-spacing:2px;margin:0;}
+        .sub{font-size:10px;letter-spacing:3px;color:#888;}
+        .meta{text-align:right;font-size:12px;}
+        .meta .t{font-size:11px;letter-spacing:2px;color:#888;margin-bottom:3px;}
+        table{border-collapse:collapse;width:100%;}
+        th{background:#1a1a1a;color:#fff;text-align:left;font-size:11px;letter-spacing:1px;padding:7px 8px;}
+        td{border-bottom:1px solid #eee;padding:7px 8px;}
+        .num{text-align:right;}
+        .tot{font-weight:bold;border-top:2px solid #1a1a1a;border-bottom:none;padding-top:9px;}
+        .note{font-size:11px;color:#888;margin-top:14px;}
+        .sec{margin-top:22px;font-size:11px;letter-spacing:1px;color:#888;text-transform:uppercase;}
+        .gal{display:flex;flex-wrap:wrap;gap:10px;margin-top:8px;}
+        .cell{width:150px;}
+        .cell img{width:150px;height:150px;object-fit:cover;border:1px solid #e8e4de;}
+        .cap{font-size:9px;color:#888;margin-top:3px;}
+        .pdfs{font-size:11px;color:#555;}
+        @media print{ body{margin:14px;} }
+      </style></head><body>${sheets}</body></html>`;
+
+    openDoc(html);
   };
 
   const hasRates = lines.some(l => l.clientRate > 0 || l.fitterRate > 0);
@@ -2250,11 +2400,11 @@ function InvoicesTab({ allEntries, rates, sites, lockedWeeks, noIndigo, billedJo
           )}
 
           {/* Receipts viewer */}
-          {allExpenses.some(e => e.receipt) && (
+          {[...allExpenses, ...companyExpenseLines].some(e => e.receipt) && (
             <div style={{ marginBottom: 16 }}>
               <div style={{ fontFamily: "'DM Mono', monospace", fontSize: 11, color: "#888", textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: 10 }}>Expense Receipts</div>
               <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
-                {allExpenses.filter(e => e.receipt).map((exp, i) => (
+                {[...allExpenses, ...companyExpenseLines].filter(e => e.receipt).map((exp, i) => (
                   <div key={i} style={{ textAlign: "center" }}>
                     {receiptIsPdf(exp.receipt)
                       ? <div onClick={() => openReceipt(exp.receipt)} style={{ width: 80, height: 80, borderRadius: 8, border: "1px solid #e8e4de", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", cursor: "pointer", background: "#faf9f7" }}>
@@ -2326,29 +2476,48 @@ function InvoicesTab({ allEntries, rates, sites, lockedWeeks, noIndigo, billedJo
 
           {/* Client timesheets — one PDF per company */}
           <div style={{ border: "1px solid #e8e4de", borderRadius: 10, padding: 14, marginBottom: 12 }}>
-            <div style={{ fontFamily: "'DM Mono', monospace", fontSize: 11, color: "#888", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 4 }}>Client timesheets</div>
+            <div style={{ fontFamily: "'DM Mono', monospace", fontSize: 11, color: "#888", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 4 }}>Client documents</div>
             <p style={{ fontFamily: "'DM Mono', monospace", fontSize: 10, color: "#aaa", margin: "0 0 10px 0" }}>
-              Proof of work to send each company. Generate one, then use Print / Save as PDF.
+              Send each company its timesheet and expenses sheet. Generate one, then use Print / Save as PDF.
             </p>
             {filterWeek === "all" ? (
-              <p style={{ fontFamily: "'DM Mono', monospace", fontSize: 11, color: "#b7860b", margin: 0 }}>Pick a specific fortnight above to generate timesheets.</p>
-            ) : timesheetClients.length === 0 ? (
-              <p style={{ fontFamily: "'DM Mono', monospace", fontSize: 11, color: "#bbb", margin: 0 }}>No chargeable work this fortnight.</p>
+              <p style={{ fontFamily: "'DM Mono', monospace", fontSize: 11, color: "#b7860b", margin: 0 }}>Pick a specific fortnight above to generate documents.</p>
+            ) : docClients.length === 0 ? (
+              <p style={{ fontFamily: "'DM Mono', monospace", fontSize: 11, color: "#bbb", margin: 0 }}>No chargeable work or expenses this fortnight.</p>
             ) : (
               <>
-                <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-                  {timesheetClients.map(c => (
-                    <button key={c} onClick={() => printClientTimesheet(c)}
-                      style={{ ...btnStyle, marginTop: 0, padding: "11px 12px", fontSize: 12, textAlign: "left", width: "100%", background: "#1a1a1a" }}>
-                      📄 {c} — timesheet
-                    </button>
-                  ))}
+                <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                  {docClients.map(c => {
+                    const hasTimesheet = timesheetClients.includes(c);
+                    const hasExpenses = expenseClients.includes(c);
+                    return (
+                      <div key={c}>
+                        <div style={{ fontFamily: "'DM Mono', monospace", fontSize: 12, color: "#C8A96E", marginBottom: 5 }}>{c}</div>
+                        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6 }}>
+                          <button onClick={() => printClientTimesheet(c)} disabled={!hasTimesheet}
+                            style={{ ...btnStyle, marginTop: 0, padding: "10px 8px", fontSize: 11, textAlign: "center", background: "#1a1a1a", opacity: hasTimesheet ? 1 : 0.35, cursor: hasTimesheet ? "pointer" : "not-allowed" }}>
+                            📄 Timesheet
+                          </button>
+                          <button onClick={() => printExpensesSheet(c)} disabled={!hasExpenses}
+                            style={{ ...btnStyle, marginTop: 0, padding: "10px 8px", fontSize: 11, textAlign: "center", background: "#5a6b52", opacity: hasExpenses ? 1 : 0.35, cursor: hasExpenses ? "pointer" : "not-allowed" }}>
+                            🧾 Expenses
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })}
                 </div>
-                {timesheetClients.length > 1 && (
-                  <button onClick={() => printClientTimesheet()}
-                    style={{ fontFamily: "'DM Mono', monospace", fontSize: 11, background: "none", border: "1px solid #e0dbd4", borderRadius: 8, padding: "9px 12px", cursor: "pointer", color: "#888", width: "100%", marginTop: 8 }}>
-                    All clients in one document
-                  </button>
+                {docClients.length > 1 && (
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6, marginTop: 10 }}>
+                    <button onClick={() => printClientTimesheet()}
+                      style={{ fontFamily: "'DM Mono', monospace", fontSize: 10, background: "none", border: "1px solid #e0dbd4", borderRadius: 8, padding: "8px 6px", cursor: "pointer", color: "#888" }}>
+                      All timesheets
+                    </button>
+                    <button onClick={() => printExpensesSheet()}
+                      style={{ fontFamily: "'DM Mono', monospace", fontSize: 10, background: "none", border: "1px solid #e0dbd4", borderRadius: 8, padding: "8px 6px", cursor: "pointer", color: "#888" }}>
+                      All expenses
+                    </button>
+                  </div>
                 )}
               </>
             )}
