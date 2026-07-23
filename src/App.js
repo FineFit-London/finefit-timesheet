@@ -1540,6 +1540,16 @@ function InvoicesTab({ allEntries, rates, sites, lockedWeeks, noIndigo, billedJo
   });
   const extrasTotal = extraLines.reduce((a, l) => a + l.cost, 0);
 
+  // Clients with work that belongs on a client timesheet this period
+  // (all hourly-site days, plus any fixed-site days flagged as extras)
+  const timesheetClients = filterWeek === "all" ? [] : [...new Set(
+    allEntries.filter(r => r.weekKey === filterWeek).flatMap(r =>
+      r.entries
+        .filter(en => !isFixedSite(en.siteName) || !!(extraDays || {})[`${r.id}::${en.date}::${en.siteId}`])
+        .map(en => en.client)
+    ).filter(Boolean)
+  )].sort();
+
   const clientTotal = hourlyLines.reduce((a, l) => a + l.clientCost, 0) + billedFixedTotal + extrasTotal;
   const allExpenses = lines.flatMap(l => l.expenses);
   const totalExpenses = allExpenses.reduce((a, e) => a + (e.amount || 0), 0);
@@ -1761,7 +1771,7 @@ function InvoicesTab({ allEntries, rates, sites, lockedWeeks, noIndigo, billedJo
   const hasRates = lines.some(l => l.clientRate > 0 || l.fitterRate > 0);
 
   // Client timesheet — proof-of-work sheet per company, matching Tom's existing weekly format.
-  const printClientTimesheet = () => {
+  const printClientTimesheet = (onlyClient = null) => {
     if (filterWeek === "all") { alert("Please pick a specific fortnight above first."); return; }
     const periodDays = getPeriodDays(filterWeek); // 14 days, each { iso, dayName, label, week }
 
@@ -1775,7 +1785,7 @@ function InvoicesTab({ allEntries, rates, sites, lockedWeeks, noIndigo, billedJo
       allEntries.filter(r => r.weekKey === filterWeek)
         .flatMap(r => r.entries.filter(en => showsOnTimesheet(r, en)).map(en => en.client)).filter(Boolean)
     )].sort();
-    const targetClients = (filterClient === "all" ? clientsInPeriod : [filterClient]).filter(c => clientsInPeriod.includes(c));
+    const targetClients = (onlyClient ? [onlyClient] : (filterClient === "all" ? clientsInPeriod : [filterClient])).filter(c => clientsInPeriod.includes(c));
     if (targetClients.length === 0) { alert("No chargeable work found for this period. (Fixed-price hours only show here once you mark them as extras on the invoice.)"); return; }
 
     const dayAbbr = { Monday: "MON", Tuesday: "TUE", Wednesday: "WED", Thursday: "THUR", Friday: "FRI", Saturday: "SAT", Sunday: "SUN" };
@@ -1828,7 +1838,8 @@ function InvoicesTab({ allEntries, rates, sites, lockedWeeks, noIndigo, billedJo
       [1, 2].map(wk => weekSheet(client, wk)).join("")
     ).join("");
 
-    const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>FineFit Timesheet</title>
+    const docTitle = `FineFit Timesheet - ${targetClients.length === 1 ? targetClients[0] : "All clients"} - ${periodLabelShort(filterWeek)}`;
+    const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${docTitle}</title>
       <style>
         *{box-sizing:border-box;} body{font-family:Arial,Helvetica,sans-serif;color:#111;padding:40px;font-size:12px;}
         .sheet{page-break-after:always;margin-bottom:30px;}
@@ -2135,8 +2146,37 @@ function InvoicesTab({ allEntries, rates, sites, lockedWeeks, noIndigo, billedJo
             </div>
           )}
 
+          {/* Client timesheets — one PDF per company */}
+          <div style={{ border: "1px solid #e8e4de", borderRadius: 10, padding: 14, marginBottom: 12 }}>
+            <div style={{ fontFamily: "'DM Mono', monospace", fontSize: 11, color: "#888", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 4 }}>Client timesheets</div>
+            <p style={{ fontFamily: "'DM Mono', monospace", fontSize: 10, color: "#aaa", margin: "0 0 10px 0" }}>
+              Proof of work to send each company. Generate one, then use Print / Save as PDF.
+            </p>
+            {filterWeek === "all" ? (
+              <p style={{ fontFamily: "'DM Mono', monospace", fontSize: 11, color: "#b7860b", margin: 0 }}>Pick a specific fortnight above to generate timesheets.</p>
+            ) : timesheetClients.length === 0 ? (
+              <p style={{ fontFamily: "'DM Mono', monospace", fontSize: 11, color: "#bbb", margin: 0 }}>No chargeable work this fortnight.</p>
+            ) : (
+              <>
+                <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                  {timesheetClients.map(c => (
+                    <button key={c} onClick={() => printClientTimesheet(c)}
+                      style={{ ...btnStyle, marginTop: 0, padding: "11px 12px", fontSize: 12, textAlign: "left", width: "100%", background: "#1a1a1a" }}>
+                      📄 {c} — timesheet
+                    </button>
+                  ))}
+                </div>
+                {timesheetClients.length > 1 && (
+                  <button onClick={() => printClientTimesheet()}
+                    style={{ fontFamily: "'DM Mono', monospace", fontSize: 11, background: "none", border: "1px solid #e0dbd4", borderRadius: 8, padding: "9px 12px", cursor: "pointer", color: "#888", width: "100%", marginTop: 8 }}>
+                    All clients in one document
+                  </button>
+                )}
+              </>
+            )}
+          </div>
+
           {/* Action buttons */}
-          <button onClick={printClientTimesheet} style={{ ...btnStyle, marginTop: 0, marginBottom: 8, padding: "12px 8px", fontSize: 12, textAlign: "center", width: "100%", background: "#1a1a1a" }}>📄 Client Timesheet (send to company)</button>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8 }}>
             <button onClick={printClientInvoice} style={{ ...btnStyle, marginTop: 0, padding: "12px 8px", fontSize: 12, textAlign: "center" }}>🖨️ Client Invoice</button>
             <button onClick={printIndigoSheet} style={{ ...btnStyle, marginTop: 0, padding: "12px 8px", fontSize: 12, textAlign: "center", background: "#2c3e50" }}>📋 Indigo Sheet</button>
