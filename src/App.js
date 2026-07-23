@@ -1791,6 +1791,31 @@ function InvoicesTab({ allEntries, rates, sites, lockedWeeks, noIndigo, billedJo
     const dayAbbr = { Monday: "MON", Tuesday: "TUE", Wednesday: "WED", Thursday: "THUR", Friday: "FRI", Saturday: "SAT", Sunday: "SUN" };
     const fmt = (iso) => new Date(iso + "T00:00:00").toLocaleDateString("en-GB");
 
+    // Work out which of the 14 days an entry belongs to.
+    // Entries submitted before the timezone fix stored a date one day out, but their
+    // weekday name is correct — so if the date is within a day and the weekday matches,
+    // place it on that day rather than dropping it.
+    const dayDiff = (isoA, isoB) => Math.round(Math.abs(new Date(isoA + "T00:00:00") - new Date(isoB + "T00:00:00")) / 86400000);
+    const placeEntry = (en) => {
+      if (!en.date) return null;
+      const exact = periodDays.find(pd => pd.iso === en.date);
+      // Only trust an exact date match if the recorded weekday agrees with it.
+      if (exact && (!en.day || exact.dayName === en.day)) return exact;
+      if (en.day) {
+        const near = periodDays.find(pd => pd.dayName === en.day && dayDiff(pd.iso, en.date) <= 1);
+        if (near) return near;
+      }
+      return null;
+    };
+
+    // Anything that still can't be placed must not disappear silently — collect it and warn.
+    const unplaced = [];
+    allEntries.filter(r => r.weekKey === filterWeek).forEach(r => r.entries.forEach(en => {
+      if (targetClients.includes(en.client) && showsOnTimesheet(r, en) && !placeEntry(en)) {
+        unplaced.push(`${r.fitter}: ${en.day || "?"} ${en.date || "(no date)"} — ${en.hours || 0}h at ${en.siteName}`);
+      }
+    }));
+
     // Build one weekly sheet (week = 1 or 2) for a client
     const weekSheet = (client, weekNo) => {
       const days = periodDays.filter(d => d.week === weekNo);
@@ -1801,7 +1826,7 @@ function InvoicesTab({ allEntries, rates, sites, lockedWeeks, noIndigo, billedJo
         const rows = [];
         allEntries.filter(r => r.weekKey === filterWeek).forEach(r => {
           r.entries.forEach(en => {
-            if (en.client === client && en.date === d.iso && showsOnTimesheet(r, en)) {
+            if (en.client === client && showsOnTimesheet(r, en) && placeEntry(en)?.iso === d.iso) {
               const hrs = en.hours || 0; weekTotal += hrs;
               const extra = isFixedSite(en.siteName);
               const desc = entryAreas(en).join(", ") + (extra ? " (extra work)" : "");
@@ -1858,6 +1883,14 @@ function InvoicesTab({ allEntries, rates, sites, lockedWeeks, noIndigo, billedJo
       </style></head><body>${body}</body></html>`;
 
     openDoc(html);
+
+    if (unplaced.length > 0) {
+      alert(
+        `Heads up \u2014 ${unplaced.length} entr${unplaced.length === 1 ? "y is" : "ies are"} missing from this timesheet because the date doesn't fall in this fortnight:\n\n` +
+        unplaced.join("\n") +
+        `\n\nOpen the Timesheets tab, edit those entries and pick the correct date, then generate this again.`
+      );
+    }
   };
 
   return (
