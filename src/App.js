@@ -1021,7 +1021,7 @@ function AdminLogin({ onLogin }) {
 }
 
 // ---------- ADMIN DASHBOARD ----------
-function AdminDashboard({ allEntries, sites, rates, lockedWeeks, fittersList, pins, noIndigo, billedJobs, onToggleBilledJob, extraDays, onToggleExtraDay, companyExpenses, onCompanyExpensesChange, onSitesChange, onRatesChange, onDeleteRecord, onUpdateRecord, onToggleLock, onFittersChange, onResetPin, onToggleIndigo, onLogout }) {
+function AdminDashboard({ allEntries, sites, rates, lockedWeeks, fittersList, pins, noIndigo, billedJobs, onToggleBilledJob, extraDays, onToggleExtraDay, companyExpenses, onCompanyExpensesChange, excludedExpenses, onToggleExcludedExpense, onSitesChange, onRatesChange, onDeleteRecord, onUpdateRecord, onToggleLock, onFittersChange, onResetPin, onToggleIndigo, onLogout }) {
   const [tab, setTab] = useState("submissions");
   return (
     <div>
@@ -1040,8 +1040,8 @@ function AdminDashboard({ allEntries, sites, rates, lockedWeeks, fittersList, pi
         ))}
       </div>
       {tab === "submissions" && <SubmissionsTab allEntries={allEntries} sites={sites} lockedWeeks={lockedWeeks} fittersList={fittersList} onDeleteRecord={onDeleteRecord} onUpdateRecord={onUpdateRecord} />}
-      {tab === "report" && <InvoicesTab allEntries={allEntries} rates={rates} sites={sites} lockedWeeks={lockedWeeks} noIndigo={noIndigo} billedJobs={billedJobs} onToggleBilledJob={onToggleBilledJob} extraDays={extraDays} onToggleExtraDay={onToggleExtraDay} companyExpenses={companyExpenses} onToggleLock={onToggleLock} />}
-      {tab === "expenses" && <ExpensesTab companyExpenses={companyExpenses} sites={sites} onCompanyExpensesChange={onCompanyExpensesChange} />}
+      {tab === "report" && <InvoicesTab allEntries={allEntries} rates={rates} sites={sites} lockedWeeks={lockedWeeks} noIndigo={noIndigo} billedJobs={billedJobs} onToggleBilledJob={onToggleBilledJob} extraDays={extraDays} onToggleExtraDay={onToggleExtraDay} companyExpenses={companyExpenses} excludedExpenses={excludedExpenses} onToggleLock={onToggleLock} />}
+      {tab === "expenses" && <ExpensesTab companyExpenses={companyExpenses} sites={sites} allEntries={allEntries} excludedExpenses={excludedExpenses} onCompanyExpensesChange={onCompanyExpensesChange} onToggleExcludedExpense={onToggleExcludedExpense} />}
       {tab === "earnings" && <EarningsTab allEntries={allEntries} rates={rates} sites={sites} noIndigo={noIndigo} billedJobs={billedJobs} extraDays={extraDays} />}
       {tab === "rates" && <RatesTab allEntries={allEntries} rates={rates} fittersList={fittersList} sites={sites} onRatesChange={onRatesChange} />}
       {tab === "fitters" && <FittersTab fittersList={fittersList} allEntries={allEntries} pins={pins} noIndigo={noIndigo} onFittersChange={onFittersChange} onResetPin={onResetPin} onToggleIndigo={onToggleIndigo} />}
@@ -1321,24 +1321,23 @@ function RatesTab({ allEntries, rates, fittersList, sites, onRatesChange }) {
 }
 
 // ---------- EXPENSES TAB (Tom's own costs per client) ----------
-function ExpensesTab({ companyExpenses, sites, onCompanyExpensesChange }) {
+function ExpensesTab({ companyExpenses, sites, allEntries, excludedExpenses, onCompanyExpensesChange, onToggleExcludedExpense }) {
   const [client, setClient] = useState("");
+  const [siteId, setSiteId] = useState("");
   const [date, setDate] = useState(dateKey(new Date()));
   const [description, setDescription] = useState("");
   const [amount, setAmount] = useState("");
   const [receipt, setReceipt] = useState(null);
   const [error, setError] = useState("");
+  const [editingId, setEditingId] = useState(null);
   const fileRef = useRef(null);
 
   const clients = [...new Set((sites || []).map(s => s.client).filter(Boolean))].sort();
+  const sitesForClient = (c) => (sites || []).filter(s => s.client === c);
 
   const handleReceipt = (file) => {
     if (!file) return;
-    // Receipts are stored inline in the database, which has a ~1MB per-record limit.
-    if (file.size > 900 * 1024) {
-      setError("That file is a bit large (over ~0.9MB). Please use a smaller photo or PDF.");
-      return;
-    }
+    if (file.size > 900 * 1024) { setError("That file is a bit large (over ~0.9MB). Please use a smaller photo or PDF."); return; }
     const reader = new FileReader();
     reader.onload = (ev) => {
       const isPdf = file.type === "application/pdf" || /\.pdf$/i.test(file.name || "");
@@ -1348,36 +1347,60 @@ function ExpensesTab({ companyExpenses, sites, onCompanyExpensesChange }) {
     reader.readAsDataURL(file);
   };
 
+  const resetForm = () => { setClient(""); setSiteId(""); setDescription(""); setAmount(""); setReceipt(null); setEditingId(null); setError(""); if (fileRef.current) fileRef.current.value = ""; };
+
   const addExpense = async () => {
     if (!client) { setError("Pick which company this is for."); return; }
     if (!description.trim()) { setError("Add a short description, e.g. Hotel \u2013 2 nights."); return; }
     const amt = parseFloat(amount);
     if (isNaN(amt) || amt <= 0) { setError("Enter a valid amount."); return; }
     if (!date) { setError("Pick the date it was incurred."); return; }
-    await onCompanyExpensesChange([...(companyExpenses || []), {
-      id: Date.now().toString(), client, date, description: description.trim(), amount: amt, receipt: receipt || null,
-    }]);
-    setDescription(""); setAmount(""); setReceipt(null); setError("");
-    if (fileRef.current) fileRef.current.value = "";
+    const base = { client, siteId: siteId || "", date, description: description.trim(), amount: amt, receipt: receipt || null };
+    if (editingId) {
+      await onCompanyExpensesChange((companyExpenses || []).map(e => e.id === editingId ? { ...e, ...base } : e));
+    } else {
+      await onCompanyExpensesChange([...(companyExpenses || []), { id: Date.now().toString(), ...base }]);
+    }
+    resetForm();
   };
 
-  // Group for display, newest first
-  const sorted = [...(companyExpenses || [])].sort((a, b) => (b.date || "").localeCompare(a.date || ""));
+  const startEdit = (e) => {
+    setEditingId(e.id); setClient(e.client); setSiteId(e.siteId || ""); setDate(e.date || dateKey(new Date()));
+    setDescription(e.description || ""); setAmount(String(e.amount ?? "")); setReceipt(e.receipt || null); setError("");
+  };
+
+  // Build a combined, per-company view: Tom's own expenses (editable) plus the
+  // fitters' logged expenses (read-only). Both can be excluded from a client's bill.
+  const siteName = (id) => (sites || []).find(s => s.id === id)?.name || "";
+  const invoiceOf = (iso) => iso ? periodLabelShort(dateKey(getPeriodStart(new Date(iso + "T00:00:00")))) : "—";
+  const items = [];
+  (companyExpenses || []).forEach(e => {
+    items.push({ kind: "own", key: `c::${e.id}`, id: e.id, client: e.client, date: e.date, description: e.description, amount: e.amount || 0, receipt: e.receipt || null, site: siteName(e.siteId), raw: e });
+  });
+  (allEntries || []).forEach(r => (r.entries || []).forEach((en, ei) => {
+    (en.expenses || []).forEach((x, xi) => {
+      // key must match the invoice side: f::recordId::expenseIndex::siteId
+      items.push({ kind: "fitter", key: `f::${r.id}::${xi}::${en.siteId}`, client: en.client, date: en.date, description: x.description, amount: x.amount || 0, receipt: x.receipt || null, site: en.siteName, who: r.fitter });
+    });
+  }));
+  const isExcluded = (key) => !!(excludedExpenses || {})[key];
   const byClient = {};
-  sorted.forEach(e => { (byClient[e.client] = byClient[e.client] || []).push(e); });
+  items.forEach(it => { (byClient[it.client] = byClient[it.client] || []).push(it); });
+  Object.values(byClient).forEach(list => list.sort((a, b) => (b.date || "").localeCompare(a.date || "")));
+  const sorted = items;
 
   return (
     <div>
       <p style={{ fontFamily: "'DM Mono', monospace", fontSize: 12, color: "#888", marginBottom: 16 }}>
-        Your own costs for a company \u2014 hotels, flights, travel. They\u2019re added to that company\u2019s invoice for the fortnight the date falls in, together with any fitter receipts, as one expenses total.
+        Your own costs plus the fitters&apos; logged expenses, per company. Everything here is added to that company&apos;s invoice unless you exclude it. Fitter expenses are edited in the Timesheets tab.
       </p>
 
       <div style={{ background: "#f5f2ed", borderRadius: 10, padding: 16, marginBottom: 20 }}>
-        <div style={{ fontFamily: "'DM Mono', monospace", fontSize: 11, color: "#888", textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: 12 }}>Add Expense</div>
+        <div style={{ fontFamily: "'DM Mono', monospace", fontSize: 11, color: "#888", textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: 12 }}>{editingId ? "Edit Expense" : "Add Expense"}</div>
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 10 }}>
           <div>
             <label style={labelStyle}>Company</label>
-            <select value={client} onChange={e => { setClient(e.target.value); setError(""); }} style={selectStyle}>
+            <select value={client} onChange={e => { setClient(e.target.value); setSiteId(""); setError(""); }} style={selectStyle}>
               <option value="">— Select company —</option>
               {clients.map(c => <option key={c} value={c}>{c}</option>)}
             </select>
@@ -1387,6 +1410,15 @@ function ExpensesTab({ companyExpenses, sites, onCompanyExpensesChange }) {
             <input type="date" value={date} onChange={e => { setDate(e.target.value); setError(""); }} style={inputStyle} />
           </div>
         </div>
+        {client && sitesForClient(client).length > 0 && (
+          <div style={{ marginBottom: 10 }}>
+            <label style={labelStyle}>Site (optional)</label>
+            <select value={siteId} onChange={e => setSiteId(e.target.value)} style={selectStyle}>
+              <option value="">— Not site-specific —</option>
+              {sitesForClient(client).map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+            </select>
+          </div>
+        )}
         <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr", gap: 10 }}>
           <div>
             <label style={labelStyle}>Description</label>
@@ -1422,44 +1454,62 @@ function ExpensesTab({ companyExpenses, sites, onCompanyExpensesChange }) {
           )}
         </div>
         {error && <p style={{ color: "#c0392b", fontFamily: "'DM Mono', monospace", fontSize: 12, margin: "8px 0 0 0" }}>{error}</p>}
-        <button onClick={addExpense} style={{ ...btnStyle, marginTop: 12, padding: "10px 18px" }}>+ Add Expense</button>
+        <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
+          <button onClick={addExpense} style={{ ...btnStyle, marginTop: 0, padding: "10px 18px" }}>{editingId ? "Save changes" : "+ Add Expense"}</button>
+          {editingId && <button onClick={resetForm} style={{ fontFamily: "'DM Mono', monospace", fontSize: 13, background: "none", border: "1px solid #e0dbd4", borderRadius: 8, padding: "10px 16px", cursor: "pointer", color: "#888" }}>Cancel</button>}
+        </div>
         {clients.length === 0 && <p style={{ fontFamily: "'DM Mono', monospace", fontSize: 11, color: "#b7860b", margin: "8px 0 0 0" }}>Add a site with a client in the Sites tab first.</p>}
       </div>
 
       {sorted.length === 0 ? (
-        <p style={{ textAlign: "center", fontFamily: "'DM Mono', monospace", fontSize: 13, color: "#bbb", padding: "24px 0" }}>No expenses added yet.</p>
+        <p style={{ textAlign: "center", fontFamily: "'DM Mono', monospace", fontSize: 13, color: "#bbb", padding: "24px 0" }}>No expenses yet.</p>
       ) : (
         <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
           {Object.keys(byClient).sort().map(c => {
             const list = byClient[c];
-            const total = list.reduce((a, e) => a + (e.amount || 0), 0);
+            const total = list.filter(it => !isExcluded(it.key)).reduce((a, e) => a + (e.amount || 0), 0);
             return (
               <div key={c}>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
                   <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 12, color: "#C8A96E" }}>{c}</span>
-                  <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 12, color: "#1a1a1a", fontWeight: 700 }}>{toGBP(total)}</span>
+                  <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 12, color: "#1a1a1a", fontWeight: 700 }}>{toGBP(total)} <span style={{ color: "#aaa", fontWeight: 400 }}>on invoice</span></span>
                 </div>
                 <div style={{ border: "1px solid #e8e4de", borderRadius: 8, overflow: "hidden" }}>
-                  {list.map(e => (
-                    <div key={e.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, padding: "10px 12px", borderBottom: "1px solid #f5f2ed" }}>
-                      <div>
-                        <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 12, color: "#1a1a1a" }}>{e.description}</span>
-                        <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 10, color: "#aaa", marginLeft: 8 }}>
-                          {e.date} · invoice {periodLabelShort(dateKey(getPeriodStart(new Date(e.date + "T00:00:00"))))}
-                        </span>
+                  {list.map(it => {
+                    const off = isExcluded(it.key);
+                    return (
+                      <div key={it.key} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, padding: "10px 12px", borderBottom: "1px solid #f5f2ed", background: off ? "#faf6f6" : "#fff", opacity: off ? 0.6 : 1 }}>
+                        <div style={{ minWidth: 0 }}>
+                          <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 12, color: "#1a1a1a", textDecoration: off ? "line-through" : "none" }}>{it.description}</span>
+                          <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 9, color: it.kind === "own" ? "#5a6b52" : "#8a7aa8", marginLeft: 8, background: it.kind === "own" ? "#eef2ea" : "#f0edf5", borderRadius: 4, padding: "1px 6px" }}>{it.kind === "own" ? "FineFit" : it.who}</span>
+                          <div style={{ fontFamily: "'DM Mono', monospace", fontSize: 10, color: "#aaa", marginTop: 2 }}>
+                            {it.date || "—"}{it.site ? ` · ${it.site}` : ""} · invoice {invoiceOf(it.date)}{off ? " · NOT charged" : ""}
+                          </div>
+                        </div>
+                        <div style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
+                          {it.receipt
+                            ? (receiptIsPdf(it.receipt)
+                                ? <span onClick={() => openReceipt(it.receipt)} title={receiptName(it.receipt)} style={{ fontFamily: "'DM Mono', monospace", fontSize: 9, color: "#888", border: "1px solid #e0dbd4", borderRadius: 4, padding: "3px 6px", cursor: "pointer" }}>📄</span>
+                                : <img src={receiptSrc(it.receipt)} alt="" onClick={() => openReceipt(it.receipt)} style={{ width: 24, height: 24, objectFit: "cover", borderRadius: 4, border: "1px solid #e0dbd4", cursor: "pointer" }} />)
+                            : <span title="No receipt" style={{ fontFamily: "'DM Mono', monospace", fontSize: 9, color: "#ccc" }}>—</span>}
+                          <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 12, color: "#1a1a1a" }}>{toGBP(it.amount || 0)}</span>
+                          <button onClick={() => onToggleExcludedExpense(it.key)}
+                            title={off ? "Include on this company's invoice" : "Exclude from this company's invoice"}
+                            style={{ background: off ? "#5a6b52" : "none", border: `1px solid ${off ? "#5a6b52" : "#e0dbd4"}`, borderRadius: 6, padding: "3px 9px", fontFamily: "'DM Mono', monospace", fontSize: 10, color: off ? "#fff" : "#888", cursor: "pointer", whiteSpace: "nowrap" }}>
+                            {off ? "Excluded" : "Exclude"}
+                          </button>
+                          {it.kind === "own" ? (
+                            <>
+                              <button onClick={() => startEdit(it.raw)} style={{ background: "none", border: "1px solid #e0dbd4", borderRadius: 6, padding: "3px 9px", fontFamily: "'DM Mono', monospace", fontSize: 10, color: "#888", cursor: "pointer" }}>Edit</button>
+                              <button onClick={() => onCompanyExpensesChange((companyExpenses || []).filter(x => x.id !== it.id))} style={{ background: "none", border: "1px solid #f5c6cb", borderRadius: 6, padding: "3px 9px", fontFamily: "'DM Mono', monospace", fontSize: 10, color: "#c0392b", cursor: "pointer" }}>Del</button>
+                            </>
+                          ) : (
+                            <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 9, color: "#bbb", whiteSpace: "nowrap" }}>edit in Timesheets</span>
+                          )}
+                        </div>
                       </div>
-                      <div style={{ display: "flex", alignItems: "center", gap: 10, flexShrink: 0 }}>
-                        {e.receipt
-                          ? (receiptIsPdf(e.receipt)
-                              ? <span onClick={() => openReceipt(e.receipt)} title={receiptName(e.receipt)} style={{ fontFamily: "'DM Mono', monospace", fontSize: 9, color: "#888", border: "1px solid #e0dbd4", borderRadius: 4, padding: "3px 6px", cursor: "pointer" }}>📄</span>
-                              : <img src={receiptSrc(e.receipt)} alt="" onClick={() => openReceipt(e.receipt)} style={{ width: 26, height: 26, objectFit: "cover", borderRadius: 4, border: "1px solid #e0dbd4", cursor: "pointer" }} />)
-                          : <span title="No receipt attached" style={{ fontFamily: "'DM Mono', monospace", fontSize: 9, color: "#ccc" }}>no receipt</span>}
-                        <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 12, color: "#1a1a1a" }}>{toGBP(e.amount || 0)}</span>
-                        <button onClick={() => onCompanyExpensesChange((companyExpenses || []).filter(x => x.id !== e.id))}
-                          style={{ background: "none", border: "1px solid #eee", borderRadius: 6, padding: "3px 9px", fontFamily: "'DM Mono', monospace", fontSize: 11, color: "#aaa", cursor: "pointer" }}>Remove</button>
-                      </div>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               </div>
             );
@@ -1613,7 +1663,7 @@ function EarningsTab({ allEntries, rates, sites, noIndigo, billedJobs, extraDays
 }
 
 // ---------- INVOICES TAB ----------
-function InvoicesTab({ allEntries, rates, sites, lockedWeeks, noIndigo, billedJobs, onToggleBilledJob, extraDays, onToggleExtraDay, companyExpenses, onToggleLock }) {
+function InvoicesTab({ allEntries, rates, sites, lockedWeeks, noIndigo, billedJobs, onToggleBilledJob, extraDays, onToggleExtraDay, companyExpenses, excludedExpenses, onToggleLock }) {
   const weeks = [...new Set(allEntries.map(e => e.weekKey))].sort().reverse();
   const clients = [...new Set(allEntries.flatMap(e => e.entries.map(en => en.client)).filter(Boolean))].sort();
   const [filterWeek, setFilterWeek] = useState(weeks[0] || "all");
@@ -1721,10 +1771,24 @@ function InvoicesTab({ allEntries, rates, sites, lockedWeeks, noIndigo, billedJo
 
 
   const clientTotal = hourlyLines.reduce((a, l) => a + l.clientCost, 0) + billedFixedTotal + extrasTotal;
-  const allExpenses = lines.flatMap(l => l.expenses);
-  const fitterExpensesTotal = allExpenses.reduce((a, e) => a + (e.amount || 0), 0);
-  // Tom's own costs for this company, landing in the fortnight their date falls in
+  // Stable keys so Tom can exclude specific expenses from a client's bill
+  const fitterExpKey = (recordId, ei, siteId) => `f::${recordId}::${ei}::${siteId}`;
+  const companyExpKey = (id) => `c::${id}`;
+  const isExcluded = (key) => !!(excludedExpenses || {})[key];
+
+  // Fitter expenses that Tom is passing on (not excluded)
+  const fitterExpenseItems = [];
+  filtered.forEach(r => (r.entries || []).forEach(en => {
+    (en.expenses || []).forEach((x, ei) => {
+      const key = fitterExpKey(r.id, ei, en.siteId);
+      if (isExcluded(key)) return;
+      fitterExpenseItems.push({ key, date: en.date, description: x.description, who: r.fitter, site: en.siteName, client: en.client, amount: x.amount || 0, receipt: x.receipt || null });
+    });
+  }));
+  const fitterExpensesTotal = fitterExpenseItems.reduce((a, e) => a + (e.amount || 0), 0);
+  // Tom's own costs for this company, landing in the fortnight their date falls in, not excluded
   const companyExpenseLines = (companyExpenses || []).filter(e => {
+    if (isExcluded(companyExpKey(e.id))) return false;
     if (filterClient !== "all" && e.client !== filterClient) return false;
     if (filterWeek === "all") return true;
     if (!e.date) return false;
@@ -1733,31 +1797,19 @@ function InvoicesTab({ allEntries, rates, sites, lockedWeeks, noIndigo, billedJo
   const companyExpensesTotal = companyExpenseLines.reduce((a, e) => a + (e.amount || 0), 0);
   const totalExpenses = fitterExpensesTotal + companyExpensesTotal;
 
-  // Full expense detail (dates kept) for the client expenses sheet:
-  // fitter-logged receipts plus Tom's own costs for that company.
+  // Full expense detail (dates kept) for the client expenses sheet — non-excluded only.
   const expenseDetail = (client) => {
-    const out = [];
-    filtered.forEach(r => (r.entries || []).forEach(en => {
-      if (client && en.client !== client) return;
-      (en.expenses || []).forEach(x => out.push({
-        date: en.date, description: x.description, who: r.fitter, site: en.siteName, amount: x.amount || 0, receipt: x.receipt || null,
-      }));
-    }));
-    (companyExpenses || []).forEach(e => {
-      if (client && e.client !== client) return;
-      if (filterWeek !== "all") {
-        if (!e.date) return;
-        if (dateKey(getPeriodStart(new Date(e.date + "T00:00:00"))) !== filterWeek) return;
-      }
-      out.push({ date: e.date, description: e.description, who: "FineFit", site: "", amount: e.amount || 0, receipt: e.receipt || null });
-    });
+    const out = [
+      ...fitterExpenseItems.filter(x => !client || x.client === client).map(x => ({ date: x.date, description: x.description, who: x.who, site: x.site, amount: x.amount, receipt: x.receipt })),
+      ...companyExpenseLines.filter(e => !client || e.client === client).map(e => ({ date: e.date, description: e.description, who: "FineFit", site: (sites || []).find(s => s.id === e.siteId)?.name || "", amount: e.amount || 0, receipt: e.receipt || null })),
+    ];
     return out.sort((a, b) => (a.date || "").localeCompare(b.date || ""));
   };
 
-  // Clients that have any expense in this period
+  // Clients that have any non-excluded expense in this period
   const expenseClients = [...new Set([
-    ...filtered.flatMap(r => (r.entries || []).filter(en => (en.expenses || []).length > 0).map(en => en.client)),
-    ...(companyExpenses || []).filter(e => filterWeek === "all" || (e.date && dateKey(getPeriodStart(new Date(e.date + "T00:00:00"))) === filterWeek)).map(e => e.client),
+    ...fitterExpenseItems.map(x => x.client),
+    ...companyExpenseLines.map(e => e.client),
   ])].filter(Boolean).filter(c => filterClient === "all" || c === filterClient).sort();
 
   // Every client needing documents this fortnight (work and/or expenses)
@@ -2400,11 +2452,11 @@ function InvoicesTab({ allEntries, rates, sites, lockedWeeks, noIndigo, billedJo
           )}
 
           {/* Receipts viewer */}
-          {[...allExpenses, ...companyExpenseLines].some(e => e.receipt) && (
+          {[...fitterExpenseItems, ...companyExpenseLines].some(e => e.receipt) && (
             <div style={{ marginBottom: 16 }}>
               <div style={{ fontFamily: "'DM Mono', monospace", fontSize: 11, color: "#888", textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: 10 }}>Expense Receipts</div>
               <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
-                {[...allExpenses, ...companyExpenseLines].filter(e => e.receipt).map((exp, i) => (
+                {[...fitterExpenseItems, ...companyExpenseLines].filter(e => e.receipt).map((exp, i) => (
                   <div key={i} style={{ textAlign: "center" }}>
                     {receiptIsPdf(exp.receipt)
                       ? <div onClick={() => openReceipt(exp.receipt)} style={{ width: 80, height: 80, borderRadius: 8, border: "1px solid #e8e4de", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", cursor: "pointer", background: "#faf9f7" }}>
@@ -3024,6 +3076,7 @@ export default function App() {
   const [billedJobs, setBilledJobs] = useState({}); // fixed-price jobs already billed: { siteId: weekKey }
   const [extraDays, setExtraDays] = useState({}); // on fixed jobs, days Tom marks as chargeable extras: { dayKey: true }
   const [companyExpenses, setCompanyExpenses] = useState([]); // Tom's own costs per client (hotels, flights...)
+  const [excludedExpenses, setExcludedExpenses] = useState({}); // expenses Tom won't pass on: { expKey: true }
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -3031,8 +3084,8 @@ export default function App() {
     Promise.all([
       load("finefit_entries"), loadStr("finefit_fitter_name"),
       load("finefit_sites"), load("finefit_tasks"), load("finefit_rates"),
-      load("finefit_locked_weeks"), load("finefit_fitters"), load("finefit_pins"), load("finefit_no_indigo"), load("finefit_billed_jobs"), load("finefit_extra_days"), load("finefit_company_expenses"),
-    ]).then(([entries, name, savedSites, _savedTasks, savedRates, savedLocks, savedFitters, savedPins, savedNoIndigo, savedBilled, savedExtra, savedCoExp]) => {
+      load("finefit_locked_weeks"), load("finefit_fitters"), load("finefit_pins"), load("finefit_no_indigo"), load("finefit_billed_jobs"), load("finefit_extra_days"), load("finefit_company_expenses"), load("finefit_excluded_expenses"),
+    ]).then(([entries, name, savedSites, _savedTasks, savedRates, savedLocks, savedFitters, savedPins, savedNoIndigo, savedBilled, savedExtra, savedCoExp, savedExcl]) => {
       setAllEntries(entries || []);
       if (name) setFitterName(name);
       setSites(savedSites || []);
@@ -3044,6 +3097,7 @@ export default function App() {
       setBilledJobs(savedBilled || {});
       setExtraDays(savedExtra || {});
       setCompanyExpenses(savedCoExp || []);
+      setExcludedExpenses(savedExcl || {});
       setLoading(false);
     });
   }, []);
@@ -3062,6 +3116,7 @@ export default function App() {
   const handleSetPin = async (name, hash) => { const u = { ...pins, [name]: hash }; setPins(u); await save("finefit_pins", u); };
   const handleResetPin = async (name) => { const u = { ...pins }; delete u[name]; setPins(u); await save("finefit_pins", u); };
   const handleCompanyExpensesChange = async (u) => { setCompanyExpenses(u); await save("finefit_company_expenses", u); };
+  const handleToggleExcludedExpense = async (key) => { const u = { ...excludedExpenses }; if (u[key]) delete u[key]; else u[key] = true; setExcludedExpenses(u); await save("finefit_excluded_expenses", u); };
   const handleToggleExtraDay = async (dayKey) => {
     const u = { ...extraDays };
     if (u[dayKey]) delete u[dayKey]; else u[dayKey] = true;
@@ -3101,7 +3156,7 @@ export default function App() {
             <AdminLogin onLogin={() => setView("admin")} />
           ) : (
             <AdminDashboard allEntries={allEntries} sites={sites} rates={rates}
-              lockedWeeks={lockedWeeks} fittersList={fittersList} pins={pins} noIndigo={noIndigo} billedJobs={billedJobs} onToggleBilledJob={handleToggleBilledJob} extraDays={extraDays} onToggleExtraDay={handleToggleExtraDay} companyExpenses={companyExpenses} onCompanyExpensesChange={handleCompanyExpensesChange} onSitesChange={handleSitesChange}
+              lockedWeeks={lockedWeeks} fittersList={fittersList} pins={pins} noIndigo={noIndigo} billedJobs={billedJobs} onToggleBilledJob={handleToggleBilledJob} extraDays={extraDays} onToggleExtraDay={handleToggleExtraDay} companyExpenses={companyExpenses} onCompanyExpensesChange={handleCompanyExpensesChange} excludedExpenses={excludedExpenses} onToggleExcludedExpense={handleToggleExcludedExpense} onSitesChange={handleSitesChange}
               onRatesChange={handleRatesChange} onDeleteRecord={handleDeleteRecord} onFittersChange={handleFittersChange} onResetPin={handleResetPin} onToggleIndigo={handleToggleIndigo}
               onUpdateRecord={handleUpdateRecord} onToggleLock={handleToggleLock} onLogout={() => setView("fitter")} />
           )}
