@@ -119,12 +119,37 @@ function openReceipt(r) {
 // ---------- OVERTIME ----------
 // Splits an entry's hours into normal vs overtime.
 // Overtime = all Sat/Sun hours, all bank-holiday hours, plus weekday hours over 8.5/day.
-function splitOvertime(day, hours, dateIso) {
+// Work-away jobs: every hour is paid and charged at 1.25x, and this REPLACES
+// the usual overtime rules (no weekend/8.5hr uplift on top).
+const WORK_AWAY_MULT = 1.25;
+
+// Split a day's hours into normal and uplifted. On a work-away site every hour
+// is uplifted; otherwise weekends, bank holidays and hours over 8.5 are.
+function splitOvertime(day, hours, dateIso, workAway) {
   const h = Number(hours) || 0;
+  if (workAway) return { normal: 0, overtime: h };
   if (day === "Saturday" || day === "Sunday" || isBankHoliday(dateIso)) return { normal: 0, overtime: h };
   const normal = Math.min(h, 8.5);
-  return { normal, overtime: Math.max(0, h - 8.5) };
+  return { normal, overtime: Math.max(0, h - normal) };
 }
+
+// Fitters have ONE pair of rates wherever they work. Older data was stored per
+// fitter+site, so fall back to that so nothing is lost.
+function rateFor(rates, fitter) {
+  const direct = (rates || {})[fitter];
+  if (direct && (direct.client !== undefined || direct.fitter !== undefined)) return direct;
+  const legacyKey = Object.keys(rates || {}).find(k => k.startsWith(fitter + "|||"));
+  return legacyKey ? rates[legacyKey] : {};
+}
+function clientRateOf(rates, fitter) { return parseFloat(rateFor(rates, fitter)?.client) || 0; }
+function fitterRateOf(rates, fitter) { return parseFloat(rateFor(rates, fitter)?.fitter) || 0; }
+
+// The uplift multiplier for a site: work-away is a flat 1.25, otherwise the site's overtime rate.
+function multiplierForSite(site) {
+  if (!site) return 1.5;
+  return site.workAway ? WORK_AWAY_MULT : (site.otMultiplier ?? 1.5);
+}
+function upliftLabel(site) { return site?.workAway ? "work away" : "overtime"; }
 
 // The 14 dates of a fortnight, each with its weekday name and a short label
 function getPeriodDays(periodStartKey) {
@@ -449,7 +474,7 @@ function FitterForm({ fitterName, onLogout, onSubmit, sites, allEntries, lockedW
 
     const builtEntries = entries.map(e => {
       const h = parseFloat(e.hours);
-      const ot = splitOvertime(e.day, h, e.date);
+      const ot = splitOvertime(e.day, h, e.date, site(e.siteId)?.workAway);
       return {
         date: e.date,
         day: e.day,
@@ -483,11 +508,16 @@ function FitterForm({ fitterName, onLogout, onSubmit, sites, allEntries, lockedW
       }
     }));
 
-    // Overtime notice (so they know it'll be paid at the higher rate)
+    // Uplift notice (so they know it'll be paid at the higher rate)
     builtEntries.forEach(ne => {
       if (ne.overtimeHours > 0) {
-        const why = isBankHoliday(ne.date) ? "bank holiday" : (ne.day === "Saturday" || ne.day === "Sunday") ? "weekend" : "over 8.5 hrs";
-        warnings.push(`${ne.day}: ${ne.overtimeHours} hr(s) counted as overtime (${why}).`);
+        const s = sites.find(x => x.id === ne.siteId);
+        if (s?.workAway) {
+          warnings.push(`${ne.day}: work away job — all ${ne.overtimeHours} hr(s) paid at 1.25×.`);
+        } else {
+          const why = isBankHoliday(ne.date) ? "bank holiday" : (ne.day === "Saturday" || ne.day === "Sunday") ? "weekend" : "over 8.5 hrs";
+          warnings.push(`${ne.day}: ${ne.overtimeHours} hr(s) counted as overtime (${why}).`);
+        }
       }
     });
 
@@ -829,7 +859,7 @@ function FitterForm({ fitterName, onLogout, onSubmit, sites, allEntries, lockedW
 function MyPaySummary({ fitterName, allEntries, sites, rates }) {
   const [show, setShow] = useState(false);
   const thisPeriod = getWeekKey();
-  const siteMult = (siteName) => { const s = (sites || []).find(x => x.name === siteName); return s?.otMultiplier ?? 1.5; };
+  const siteMult = (siteName) => multiplierForSite((sites || []).find(x => x.name === siteName));
 
   // This fitter's entries for the current fortnight, grouped by site
   const mine = allEntries.filter(r => r.fitter === fitterName && r.weekKey === thisPeriod).flatMap(r => r.entries);
@@ -838,7 +868,7 @@ function MyPaySummary({ fitterName, allEntries, sites, rates }) {
   const bySite = {};
   mine.forEach(en => {
     let nh = en.normalHours, oh = en.overtimeHours;
-    if (nh === undefined || oh === undefined) { const s = splitOvertime(en.day, en.hours || 0, en.date); nh = s.normal; oh = s.overtime; }
+    if (nh === undefined || oh === undefined) { const s = splitOvertime(en.day, en.hours || 0, en.date, (sites || []).find(x => x.name === en.siteName)?.workAway); nh = s.normal; oh = s.overtime; }
     if (!bySite[en.siteName]) bySite[en.siteName] = { site: en.siteName, normalHours: 0, overtimeHours: 0 };
     bySite[en.siteName].normalHours += (nh || 0);
     bySite[en.siteName].overtimeHours += (oh || 0);
@@ -847,7 +877,7 @@ function MyPaySummary({ fitterName, allEntries, sites, rates }) {
   let anyRate = false;
   const rows = Object.values(bySite).map(s => {
     const rk = `${fitterName}|||${s.site}`;
-    const rate = parseFloat(rates[rk]?.fitter) || 0;
+    const rate = fitterRateOf(rates, fitterName);
     if (rate > 0) anyRate = true;
     const mult = siteMult(s.site);
     const pay = s.normalHours * rate + s.overtimeHours * rate * mult;
@@ -1043,7 +1073,7 @@ function AdminDashboard({ allEntries, sites, rates, lockedWeeks, fittersList, pi
       {tab === "report" && <InvoicesTab allEntries={allEntries} rates={rates} sites={sites} lockedWeeks={lockedWeeks} noIndigo={noIndigo} billedJobs={billedJobs} onToggleBilledJob={onToggleBilledJob} extraDays={extraDays} onToggleExtraDay={onToggleExtraDay} companyExpenses={companyExpenses} excludedExpenses={excludedExpenses} onToggleLock={onToggleLock} />}
       {tab === "expenses" && <ExpensesTab companyExpenses={companyExpenses} sites={sites} allEntries={allEntries} excludedExpenses={excludedExpenses} onCompanyExpensesChange={onCompanyExpensesChange} onToggleExcludedExpense={onToggleExcludedExpense} />}
       {tab === "earnings" && <EarningsTab allEntries={allEntries} rates={rates} sites={sites} noIndigo={noIndigo} billedJobs={billedJobs} extraDays={extraDays} />}
-      {tab === "rates" && <RatesTab allEntries={allEntries} rates={rates} fittersList={fittersList} sites={sites} onRatesChange={onRatesChange} />}
+      {tab === "rates" && <RatesTab allEntries={allEntries} rates={rates} fittersList={fittersList} onRatesChange={onRatesChange} />}
       {tab === "fitters" && <FittersTab fittersList={fittersList} allEntries={allEntries} pins={pins} noIndigo={noIndigo} onFittersChange={onFittersChange} onResetPin={onResetPin} onToggleIndigo={onToggleIndigo} />}
       {tab === "sites" && <SitesTab sites={sites} onSitesChange={onSitesChange} />}
     </div>
@@ -1130,189 +1160,87 @@ function FittersTab({ fittersList, allEntries, pins, noIndigo, onFittersChange, 
 }
 
 // ---------- RATES TAB ----------
-function RatesTab({ allEntries, rates, fittersList, sites, onRatesChange }) {
+function RatesTab({ allEntries, rates, fittersList, onRatesChange }) {
   const [edits, setEdits] = useState({});
   const [saved, setSaved] = useState(false);
-  const [addFitter, setAddFitter] = useState("");
-  const [addSite, setAddSite] = useState("");
-  const [manualPairs, setManualPairs] = useState([]); // pairs added this session via picker
-  const [pickError, setPickError] = useState("");
 
-  // Which fitters have actually submitted hours (so we never lose rates needed by old invoices)
+  // Fitters who've submitted hours (keep their rates so old invoices stay correct)
   const fittersWithHistory = new Set(allEntries.map(r => r.fitter));
   const roster = new Set(fittersList || []);
+  const names = [...new Set([...(fittersList || []), ...fittersWithHistory])]
+    .filter(Boolean)
+    .sort((a, b) => a.localeCompare(b));
 
-  // Build the pairs to show
-  const pairs = [];
-  const seen = new Set();
-  const addPair = (fitter, site) => {
-    const key = `${fitter}|||${site}`;
-    if (seen.has(key)) return;
-    // Hide pairings for fitters who've been removed AND never submitted anything
-    if (!roster.has(fitter) && !fittersWithHistory.has(fitter)) return;
-    seen.add(key);
-    pairs.push({ fitter, site, former: !roster.has(fitter) });
-  };
-  // From submissions
-  allEntries.forEach(record => {
-    record.entries.forEach(en => addPair(record.fitter, en.siteName));
-  });
-  // From saved rates (so pre-set ones persist after refresh)
-  Object.keys(rates || {}).forEach(key => {
-    const [fitter, site] = key.split("|||");
-    if (fitter && site) addPair(fitter, site);
-  });
-  // Added this session via the picker
-  manualPairs.forEach(({ fitter, site }) => addPair(fitter, site));
-
-  // Clean up any saved rates belonging to removed fitters with no history
-  const staleKeys = Object.keys(rates || {}).filter(key => {
-    const [fitter] = key.split("|||");
-    return fitter && !roster.has(fitter) && !fittersWithHistory.has(fitter);
-  });
-  useEffect(() => {
-    if (staleKeys.length === 0) return;
-    const cleaned = { ...rates };
-    staleKeys.forEach(k => delete cleaned[k]);
-    onRatesChange(cleaned);
-  }, [staleKeys.join("|")]);
-
-  const removeRate = async (fitter, site) => {
-    const key = `${fitter}|||${site}`;
-    const cleaned = { ...rates };
-    delete cleaned[key];
-    setManualPairs(prev => prev.filter(p => !(p.fitter === fitter && p.site === site)));
-    await onRatesChange(cleaned);
-  };
-
-  // Sort for a tidy table
-  pairs.sort((a, b) => a.fitter.localeCompare(b.fitter) || a.site.localeCompare(b.site));
-
-  const getClientRate = (fitter, site) => {
-    const key = `${fitter}|||${site}`;
-    if (edits[key]?.client !== undefined) return edits[key].client;
-    return rates[key]?.client ?? "";
-  };
-  const getFitterRate = (fitter, site) => {
-    const key = `${fitter}|||${site}`;
-    if (edits[key]?.fitter !== undefined) return edits[key].fitter;
-    return rates[key]?.fitter ?? "";
-  };
-  const setEdit = (fitter, site, field, val) => {
-    const key = `${fitter}|||${site}`;
-    setEdits(prev => ({ ...prev, [key]: { ...(prev[key] || {}), [field]: val } }));
+  const getClient = (f) => edits[f]?.client ?? (rateFor(rates, f)?.client ?? "");
+  const getFitter = (f) => edits[f]?.fitter ?? (rateFor(rates, f)?.fitter ?? "");
+  const setEdit = (f, field, value) => {
+    setEdits(prev => ({ ...prev, [f]: { ...prev[f], [field]: value } }));
     setSaved(false);
   };
+
   const saveAll = async () => {
-    const merged = { ...rates };
-    Object.entries(edits).forEach(([key, vals]) => {
-      merged[key] = {
-        client: parseFloat(vals.client ?? rates[key]?.client ?? 0) || 0,
-        fitter: parseFloat(vals.fitter ?? rates[key]?.fitter ?? 0) || 0,
-      };
+    // Rates are now one pair per fitter. Rebuild cleanly, dropping the old
+    // per-site keys so there's a single source of truth.
+    const next = {};
+    names.forEach(f => {
+      const c = parseFloat(getClient(f)) || 0;
+      const p = parseFloat(getFitter(f)) || 0;
+      if (c > 0 || p > 0) next[f] = { client: c, fitter: p };
     });
-    await onRatesChange(merged);
+    await onRatesChange(next);
     setEdits({});
     setSaved(true);
     setTimeout(() => setSaved(false), 2000);
   };
 
-  const addManualPair = () => {
-    setPickError("");
-    if (!addFitter || !addSite) { setPickError("Pick both a fitter and a site."); return; }
-    const key = `${addFitter}|||${addSite}`;
-    if (seen.has(key)) { setPickError("That fitter + site already has a row below."); return; }
-    setManualPairs(prev => [...prev, { fitter: addFitter, site: addSite }]);
-    setAddFitter(""); setAddSite("");
-  };
-
-  const fitterOptions = [...(fittersList || [])].sort((a, b) => a.localeCompare(b));
-  const siteOptions = [...(sites || [])].sort((a, b) => a.name.localeCompare(b.name));
-
   return (
     <div>
       <p style={{ fontFamily: "'DM Mono', monospace", fontSize: 12, color: "#888", marginBottom: 16 }}>
-        Set two rates per fitter per site: what you charge the client, and what you pay the fitter. You can set these up front — before a fitter has logged any hours.
+        One pair of rates per fitter \u2014 what you charge the client, and what you pay the fitter. The same rates apply on every site. Overtime and work-away uplifts are set per site in the Sites tab.
       </p>
 
-      {/* Add / pre-set a rate row */}
-      <div style={{ background: "#f5f2ed", borderRadius: 10, padding: 16, marginBottom: 20 }}>
-        <div style={{ fontFamily: "'DM Mono', monospace", fontSize: 11, color: "#888", textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: 12 }}>Add a rate</div>
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr auto", gap: 10, alignItems: "end" }}>
-          <div>
-            <label style={labelStyle}>Fitter</label>
-            <select value={addFitter} onChange={e => { setAddFitter(e.target.value); setPickError(""); }} style={selectStyle}>
-              <option value="">— Select —</option>
-              {fitterOptions.map(f => <option key={f} value={f}>{f}</option>)}
-            </select>
-          </div>
-          <div>
-            <label style={labelStyle}>Site</label>
-            <select value={addSite} onChange={e => { setAddSite(e.target.value); setPickError(""); }} style={selectStyle}>
-              <option value="">— Select —</option>
-              {siteOptions.map(s => <option key={s.id} value={s.name}>{s.name}</option>)}
-            </select>
-          </div>
-          <button onClick={addManualPair} style={{ ...btnStyle, marginTop: 0, padding: "10px 16px", whiteSpace: "nowrap" }}>+ Add</button>
-        </div>
-        {pickError && <p style={{ color: "#c0392b", fontFamily: "'DM Mono', monospace", fontSize: 12, marginTop: 8, marginBottom: 0 }}>{pickError}</p>}
-        {(fitterOptions.length === 0 || siteOptions.length === 0) && (
-          <p style={{ fontFamily: "'DM Mono', monospace", fontSize: 11, color: "#b7860b", marginTop: 8, marginBottom: 0 }}>
-            {fitterOptions.length === 0 ? "Add fitters in the Fitters tab first. " : ""}{siteOptions.length === 0 ? "Add sites in the Sites tab first." : ""}
-          </p>
-        )}
-      </div>
-
-      {pairs.length === 0 ? (
-        <p style={{ textAlign: "center", fontFamily: "'DM Mono', monospace", fontSize: 13, color: "#bbb", padding: "24px 0" }}>
-          No rates yet. Use “Add a rate” above to set one up.
+      {names.length === 0 ? (
+        <p style={{ textAlign: "center", fontFamily: "'DM Mono', monospace", fontSize: 13, color: "#bbb", padding: "30px 0" }}>
+          Add fitters in the Fitters tab first.
         </p>
       ) : (
         <>
           <div style={{ border: "1px solid #e8e4de", borderRadius: 10, overflow: "hidden", marginBottom: 16 }}>
-            <div style={{ background: "#1a1a1a", padding: "10px 14px", display: "grid", gridTemplateColumns: "1fr 1fr 100px 100px 32px", gap: 10 }}>
-              {["Fitter", "Site", "Client Rate £/hr", "Fitter Rate £/hr", ""].map((h, i) => (
-                <span key={i} style={{ fontFamily: "'DM Mono', monospace", fontSize: 10, color: "#C8A96E", textTransform: "uppercase", letterSpacing: "0.08em" }}>{h}</span>
+            <div style={{ display: "grid", gridTemplateColumns: "1.6fr 1fr 1fr", gap: 10, padding: "10px 14px", background: "#1a1a1a" }}>
+              {["Fitter", "Client rate \u00A3/hr", "Fitter rate \u00A3/hr"].map((h, i) => (
+                <span key={i} style={{ fontFamily: "'DM Mono', monospace", fontSize: 10, color: "#C8A96E", textTransform: "uppercase", letterSpacing: "0.06em" }}>{h}</span>
               ))}
             </div>
-            {pairs.map(({ fitter, site, former }) => (
-              <div key={`${fitter}|||${site}`} style={{ display: "grid", gridTemplateColumns: "1fr 1fr 100px 100px 32px", gap: 10, padding: "10px 14px", borderBottom: "1px solid #f5f2ed", alignItems: "center", background: former ? "#fafaf8" : "transparent" }}>
-                <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 12, color: former ? "#999" : "#1a1a1a" }}>
-                  {fitter}
-                  {former && <span style={{ fontSize: 9, color: "#b7860b", background: "#fff8e8", borderRadius: 4, padding: "1px 5px", marginLeft: 6 }}>former</span>}
-                </span>
-                <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 12, color: "#888" }}>{site}</span>
-                {(sites || []).find(s => s.name === site)?.pricing === "fixed" ? (
-                  <span title="This job is billed at a fixed price, so there's no hourly client rate."
-                    style={{ fontFamily: "'DM Mono', monospace", fontSize: 10, color: "#1a6f4b", background: "#eaf6f0", borderRadius: 5, padding: "5px 6px", textAlign: "center" }}>Fixed price</span>
-                ) : (
+            {names.map(f => {
+              const former = !roster.has(f);
+              return (
+                <div key={f} style={{ display: "grid", gridTemplateColumns: "1.6fr 1fr 1fr", gap: 10, padding: "10px 14px", borderBottom: "1px solid #f5f2ed", alignItems: "center", opacity: former ? 0.6 : 1 }}>
+                  <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 13, color: "#1a1a1a" }}>
+                    {f}{former && <span style={{ fontSize: 9, color: "#b7860b", marginLeft: 6 }}>former</span>}
+                  </span>
                   <div style={{ position: "relative" }}>
-                    <span style={{ position: "absolute", left: 8, top: "50%", transform: "translateY(-50%)", fontFamily: "'DM Mono', monospace", fontSize: 11, color: "#aaa" }}>£</span>
-                    <input value={getClientRate(fitter, site)} onChange={e => setEdit(fitter, site, "client", e.target.value)}
+                    <span style={{ position: "absolute", left: 8, top: "50%", transform: "translateY(-50%)", fontFamily: "'DM Mono', monospace", fontSize: 11, color: "#aaa" }}>\u00A3</span>
+                    <input value={getClient(f)} onChange={e => setEdit(f, "client", e.target.value)}
                       type="number" min="0" step="0.5" placeholder="0.00"
-                      style={{ ...inputStyle, paddingLeft: 20, fontSize: 12 }} />
+                      style={{ ...inputStyle, paddingLeft: 20, fontSize: 12, marginBottom: 0 }} />
                   </div>
-                )}
-                <div style={{ position: "relative" }}>
-                  <span style={{ position: "absolute", left: 8, top: "50%", transform: "translateY(-50%)", fontFamily: "'DM Mono', monospace", fontSize: 11, color: "#aaa" }}>£</span>
-                  <input value={getFitterRate(fitter, site)} onChange={e => setEdit(fitter, site, "fitter", e.target.value)}
-                    type="number" min="0" step="0.5" placeholder="0.00"
-                    style={{ ...inputStyle, paddingLeft: 20, fontSize: 12 }} />
+                  <div style={{ position: "relative" }}>
+                    <span style={{ position: "absolute", left: 8, top: "50%", transform: "translateY(-50%)", fontFamily: "'DM Mono', monospace", fontSize: 11, color: "#aaa" }}>\u00A3</span>
+                    <input value={getFitter(f)} onChange={e => setEdit(f, "fitter", e.target.value)}
+                      type="number" min="0" step="0.5" placeholder="0.00"
+                      style={{ ...inputStyle, paddingLeft: 20, fontSize: 12, marginBottom: 0 }} />
+                  </div>
                 </div>
-                <button
-                  onClick={() => { if (window.confirm(`Remove the rate for ${fitter} at ${site}?`)) removeRate(fitter, site); }}
-                  title="Remove this rate"
-                  style={{ background: "none", border: "1px solid #eee", borderRadius: 6, color: "#ccc", cursor: "pointer", fontSize: 15, lineHeight: 1, height: 32, width: 32 }}>×</button>
-              </div>
-            ))}
+              );
+            })}
           </div>
-          {pairs.some(p => p.former) && (
+          {names.some(f => !roster.has(f)) && (
             <p style={{ fontFamily: "'DM Mono', monospace", fontSize: 11, color: "#b7860b", marginTop: 0, marginBottom: 12 }}>
-              “Former” fitters have been removed from the Fitters list but still have submitted hours. Their rates are kept so past invoices stay correct.
+              \u201CFormer\u201D fitters have been removed from the Fitters list but still have submitted hours. Their rates are kept so past invoices stay correct.
             </p>
           )}
           <button onClick={saveAll} style={{ ...btnStyle, marginTop: 0, padding: "11px 24px", background: saved ? "#2ecc71" : "#1a1a1a" }}>
-            {saved ? "✓ Saved!" : "Save All Rates"}
+            {saved ? "\u2713 Saved!" : "Save All Rates"}
           </button>
         </>
       )}
@@ -1524,7 +1452,7 @@ function ExpensesTab({ companyExpenses, sites, allEntries, excludedExpenses, onC
 function EarningsTab({ allEntries, rates, sites, noIndigo, billedJobs, extraDays }) {
   const [view, setView] = useState("period"); // "period" | "client" | "fitter"
 
-  const siteMult = (siteName) => { const s = (sites || []).find(x => x.name === siteName); return s?.otMultiplier ?? 1.5; };
+  const siteMult = (siteName) => multiplierForSite((sites || []).find(x => x.name === siteName));
   const siteByName = (name) => (sites || []).find(x => x.name === name);
   const isFixedSite = (name) => siteByName(name)?.pricing === "fixed";
   const excluded = new Set(noIndigo || []);
@@ -1535,14 +1463,14 @@ function EarningsTab({ allEntries, rates, sites, noIndigo, billedJobs, extraDays
     const period = record.weekKey;
     record.entries.forEach(en => {
       let nh = en.normalHours, oh = en.overtimeHours;
-      if (nh === undefined || oh === undefined) { const s = splitOvertime(en.day, en.hours || 0, en.date); nh = s.normal; oh = s.overtime; }
+      if (nh === undefined || oh === undefined) { const s = splitOvertime(en.day, en.hours || 0, en.date, (sites || []).find(x => x.name === en.siteName)?.workAway); nh = s.normal; oh = s.overtime; }
       const rk = `${record.fitter}|||${en.siteName}`;
       const fixed = isFixedSite(en.siteName);
       const dayKey = `${record.id}::${en.date}::${en.siteId}`;
       const isExtra = fixed && !!(extraDays || {})[dayKey];
       // Hourly job → charge hourly. Fixed job → charge only flagged extra days hourly (fixed price added separately).
-      const cr = (!fixed || isExtra) ? (parseFloat(rates[rk]?.client) || 0) : 0;
-      const fr = parseFloat(rates[rk]?.fitter) || 0;
+      const cr = (!fixed || isExtra) ? clientRateOf(rates, record.fitter) : 0;
+      const fr = fitterRateOf(rates, record.fitter);
       const mult = siteMult(en.siteName);
       const charged = nh * cr + oh * cr * mult;
       // Tom (excluded from Indigo) has no payout, so all his charged time is margin
@@ -1693,7 +1621,7 @@ function InvoicesTab({ allEntries, rates, sites, lockedWeeks, noIndigo, billedJo
       // Use stored split if present, else derive from day (back-compat with old entries)
       let nh = en.normalHours, oh = en.overtimeHours;
       if (nh === undefined || oh === undefined) {
-        const s = splitOvertime(en.day, en.hours || 0, en.date); nh = s.normal; oh = s.overtime;
+        const s = splitOvertime(en.day, en.hours || 0, en.date, (sites || []).find(x => x.name === en.siteName)?.workAway); nh = s.normal; oh = s.overtime;
       }
       fitterSiteTotals[key].normalHours += (nh || 0);
       fitterSiteTotals[key].overtimeHours += (oh || 0);
@@ -1708,8 +1636,8 @@ function InvoicesTab({ allEntries, rates, sites, lockedWeeks, noIndigo, billedJo
     const rateKey = `${fitter}|||${site}`;
     const fixed = isFixedSite(site);
     // On fixed-price jobs the client isn't charged per hour — but fitters are still paid hourly.
-    const clientRate = fixed ? 0 : (parseFloat(rates[rateKey]?.client) || 0);
-    const fitterRate = parseFloat(rates[rateKey]?.fitter) || 0;
+    const clientRate = fixed ? 0 : clientRateOf(rates, fitter);
+    const fitterRate = fitterRateOf(rates, fitter);
     const mult = siteMult(site);
     const otClientRate = clientRate * mult;
     const otFitterRate = fitterRate * mult;
@@ -1717,7 +1645,7 @@ function InvoicesTab({ allEntries, rates, sites, lockedWeeks, noIndigo, billedJo
     const expTotal = expenses.reduce((a, e) => a + (e.amount || 0), 0);
     const clientCost = fixed ? 0 : (normalHours * clientRate + overtimeHours * otClientRate);
     const fitterCost = normalHours * fitterRate + overtimeHours * otFitterRate;
-    return { fitter, site, client, hours, normalHours, overtimeHours, mult, clientRate, fitterRate, otClientRate, otFitterRate, clientCost, fitterCost, expTotal, expenses, fixed };
+    return { fitter, site, client, hours, normalHours, overtimeHours, mult, uplift: upliftLabel(siteByName(site)), clientRate, fitterRate, otClientRate, otFitterRate, clientCost, fitterCost, expTotal, expenses, fixed };
   });
 
   // Hourly lines only appear on the client invoice; fixed-price jobs are billed as one line.
@@ -1747,14 +1675,14 @@ function InvoicesTab({ allEntries, rates, sites, lockedWeeks, noIndigo, billedJo
       if (!isFixedSite(en.siteName)) return;              // only fixed jobs have "extras"
       if (!(extraDays || {})[dayKeyOf(record.id, en)]) return; // only days Tom flagged
       let nh = en.normalHours, oh = en.overtimeHours;
-      if (nh === undefined || oh === undefined) { const s = splitOvertime(en.day, en.hours || 0, en.date); nh = s.normal; oh = s.overtime; }
+      if (nh === undefined || oh === undefined) { const s = splitOvertime(en.day, en.hours || 0, en.date, (sites || []).find(x => x.name === en.siteName)?.workAway); nh = s.normal; oh = s.overtime; }
       const rateKey = `${record.fitter}|||${en.siteName}`;
-      const cr = parseFloat(rates[rateKey]?.client) || 0;
+      const cr = clientRateOf(rates, record.fitter);
       const mult = siteMult(en.siteName);
       const cost = nh * cr + oh * cr * mult;
       extraLines.push({ fitter: record.fitter, site: en.siteName, client: en.client, date: en.date, day: en.day,
-        normalHours: nh, overtimeHours: oh, mult, clientRate: cr, otClientRate: cr * mult, cost,
-        areas: entryAreas(en) });
+        normalHours: nh, overtimeHours: oh, mult, uplift: upliftLabel(siteByName(en.siteName)),
+        clientRate: cr, otClientRate: cr * mult, cost, areas: entryAreas(en) });
     });
   });
   const extrasTotal = extraLines.reduce((a, l) => a + l.cost, 0);
@@ -1882,7 +1810,7 @@ function InvoicesTab({ allEntries, rates, sites, lockedWeeks, noIndigo, billedJo
       </tr>` : "";
       const otRow = l.overtimeHours > 0 ? `
       <tr>
-        <td>${l.fitter}</td><td>${l.site} <span style="color:#888">(overtime ${l.mult}\u00D7)</span></td>
+        <td>${l.fitter}</td><td>${l.site} <span style="color:#888">(${l.uplift} ${l.mult}\u00D7)</span></td>
         <td style="text-align:right">${l.overtimeHours.toFixed(2)}</td>
         <td style="text-align:right">£${l.otClientRate.toFixed(2)}</td>
         <td style="text-align:right"><strong>£${(l.overtimeHours * l.otClientRate).toFixed(2)}</strong></td>
@@ -1899,7 +1827,7 @@ function InvoicesTab({ allEntries, rates, sites, lockedWeeks, noIndigo, billedJo
       </tr>`).join("");
     // Extra / variation days on fixed jobs, billed hourly on top
     const extraRows = extraLines.map(l => {
-      const label = `${l.site} <span style="color:#888">(extra work \u2014 ${l.day} ${l.date}${l.overtimeHours > 0 ? `, incl. OT ${l.mult}\u00D7` : ""})</span>`;
+      const label = `${l.site} <span style="color:#888">(extra work \u2014 ${l.day} ${l.date}${l.overtimeHours > 0 ? `, incl. ${l.uplift} ${l.mult}\u00D7` : ""})</span>`;
       const hrs = (l.normalHours + l.overtimeHours).toFixed(2);
       return `<tr>
         <td>${l.fitter}</td><td>${label}</td>
@@ -1968,7 +1896,7 @@ function InvoicesTab({ allEntries, rates, sites, lockedWeeks, noIndigo, billedJo
       <tr style="background:#fff8f0">
         <td style="padding:7px 10px">${++rowNum}</td>
         <td style="padding:7px 10px"><strong>${l.fitter}</strong></td>
-        <td style="padding:7px 10px;color:#b7860b;font-size:11px;">overtime ${l.mult}\u00D7</td>
+        <td style="padding:7px 10px;color:#b7860b;font-size:11px;">${l.uplift} ${l.mult}\u00D7</td>
         <td style="padding:7px 10px;text-align:right">${l.overtimeHours.toFixed(2)}</td>
         <td style="padding:7px 10px;text-align:right">£${l.otFitterRate.toFixed(2)}</td>
         <td style="padding:7px 10px;text-align:right"><strong>£${(l.overtimeHours * l.otFitterRate).toFixed(2)}</strong></td>
@@ -2323,7 +2251,7 @@ function InvoicesTab({ allEntries, rates, sites, lockedWeeks, noIndigo, billedJo
                     if (l.overtimeHours > 0) rowsOut.push(
                       <tr key={`${i}-o`} style={{ borderBottom: "1px solid #f5f2ed", background: "#fffaf0" }}>
                         <td style={tdStyle}>{l.fitter}</td>
-                        <td style={{ ...tdStyle, color: "#b7860b" }}>{l.site} · OT {l.mult}×</td>
+                        <td style={{ ...tdStyle, color: "#b7860b" }}>{l.site} · {l.uplift} {l.mult}×</td>
                         <td style={{ ...tdStyle, textAlign: "right", fontFamily: "'DM Mono', monospace" }}>{l.overtimeHours.toFixed(2)}</td>
                         <td style={{ ...tdStyle, textAlign: "right", fontFamily: "'DM Mono', monospace" }}>{l.clientRate > 0 ? `£${l.otClientRate.toFixed(2)}` : "—"}</td>
                         <td style={{ ...tdStyle, textAlign: "right", fontFamily: "'DM Mono', monospace", fontWeight: 600 }}>{l.clientRate > 0 ? toGBP(l.overtimeHours * l.otClientRate) : "—"}</td>
@@ -2419,7 +2347,7 @@ function InvoicesTab({ allEntries, rates, sites, lockedWeeks, noIndigo, billedJo
                     if (l.overtimeHours > 0) rowsOut.push(
                       <tr key={`${i}-o`} style={{ borderBottom: "1px solid #f5f2ed", background: "#fffaf0" }}>
                         <td style={tdStyle}>{l.fitter}</td>
-                        <td style={{ ...tdStyle, color: "#b7860b" }}>{l.site} · OT {l.mult}×</td>
+                        <td style={{ ...tdStyle, color: "#b7860b" }}>{l.site} · {l.uplift} {l.mult}×</td>
                         <td style={{ ...tdStyle, textAlign: "right", fontFamily: "'DM Mono', monospace" }}>{l.overtimeHours.toFixed(2)}</td>
                         <td style={{ ...tdStyle, textAlign: "right", fontFamily: "'DM Mono', monospace" }}>{l.fitterRate > 0 ? `£${l.otFitterRate.toFixed(2)}` : "—"}</td>
                         <td style={{ ...tdStyle, textAlign: "right", fontFamily: "'DM Mono', monospace", fontWeight: 600 }}>{l.fitterRate > 0 ? toGBP(l.overtimeHours * l.otFitterRate) : "—"}</td>
@@ -2837,7 +2765,7 @@ function EditSubmission({ record, sites, allEntries, onSave, onCancel }) {
       entries: entries.map(e => {
         const s = site(e.siteId);
         const h = parseFloat(e.hours);
-        const ot = splitOvertime(e.day, h, e.date);
+        const ot = splitOvertime(e.day, h, e.date, site(e.siteId)?.workAway);
         // include any un-added draft
         const areas = [...(e.areas || [])];
         if ((e.areaDraft || "").trim() && !areas.some(a => a.toLowerCase() === e.areaDraft.trim().toLowerCase())) areas.push(e.areaDraft.trim());
@@ -2979,6 +2907,7 @@ function SitesTab({ sites, onSitesChange }) {
   const [client, setClient] = useState("");
   const [otMult, setOtMult] = useState("1.5");
   const [pricing, setPricing] = useState("hourly");
+  const [workAway, setWorkAway] = useState(false);
   const [jobPrice, setJobPrice] = useState("");
   const [error, setError] = useState("");
   const addSite = async () => {
@@ -2990,13 +2919,13 @@ function SitesTab({ sites, onSitesChange }) {
     if (pricing === "fixed" && (isNaN(p) || p <= 0)) { setError("Enter the fixed price for this job."); return; }
     await onSitesChange([...sites, {
       id: Date.now().toString(), name: siteName.trim(), client: client.trim(), otMultiplier: m,
-      pricing, jobPrice: pricing === "fixed" ? p : null,
+      pricing, jobPrice: pricing === "fixed" ? p : null, workAway,
     }]);
-    setSiteName(""); setClient(""); setOtMult("1.5"); setPricing("hourly"); setJobPrice(""); setError("");
+    setSiteName(""); setClient(""); setOtMult("1.5"); setPricing("hourly"); setJobPrice(""); setWorkAway(false); setError("");
   };
   return (
     <div>
-      <p style={{ fontFamily: "'DM Mono', monospace", fontSize: 12, color: "#888", marginBottom: 20 }}>Add sites, link them to a client, choose how the job is priced, and set the overtime rate.</p>
+      <p style={{ fontFamily: "'DM Mono', monospace", fontSize: 12, color: "#888", marginBottom: 20 }}>Add sites, link them to a client, choose how the job is priced, and set the overtime or work-away uplift.</p>
       <div style={{ background: "#f5f2ed", borderRadius: 10, padding: 16, marginBottom: 20 }}>
         <div style={{ fontFamily: "'DM Mono', monospace", fontSize: 11, color: "#888", textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: 12 }}>Add Site</div>
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 10 }}>
@@ -3025,17 +2954,29 @@ function SitesTab({ sites, onSitesChange }) {
           </span>
         </div>
         <div style={{ marginBottom: 10 }}>
-          <label style={labelStyle}>Overtime multiplier</label>
-          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <select value={otMult} onChange={e => { setOtMult(e.target.value); setError(""); }} style={{ ...selectStyle, width: 120 }}>
-              <option value="1.25">1.25×</option>
-              <option value="1.5">1.5×</option>
-              <option value="1">None (1×)</option>
-              <option value="2">2×</option>
-            </select>
-            <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 11, color: "#aaa" }}>applied to weekend hours &amp; anything over 8.5 hrs/day</span>
-          </div>
+          <label style={{ display: "flex", alignItems: "center", gap: 9, cursor: "pointer" }}>
+            <input type="checkbox" checked={workAway} onChange={e => setWorkAway(e.target.checked)}
+              style={{ width: 17, height: 17, accentColor: "#1a1a1a", cursor: "pointer" }} />
+            <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 12, color: "#1a1a1a" }}>Work away job</span>
+          </label>
+          <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 11, color: "#aaa" }}>
+            Every hour on this job is paid and charged at 1.25&times; \u2014 this replaces the usual overtime rules.
+          </span>
         </div>
+        {!workAway && (
+          <div style={{ marginBottom: 10 }}>
+            <label style={labelStyle}>Overtime multiplier</label>
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <select value={otMult} onChange={e => { setOtMult(e.target.value); setError(""); }} style={{ ...selectStyle, width: 120 }}>
+                <option value="1.25">1.25&times;</option>
+                <option value="1.5">1.5&times;</option>
+                <option value="1">None (1&times;)</option>
+                <option value="2">2&times;</option>
+              </select>
+              <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 11, color: "#aaa" }}>applied to weekend hours &amp; anything over 8.5 hrs/day</span>
+            </div>
+          </div>
+        )}
         {error && <p style={{ color: "#c0392b", fontFamily: "'DM Mono', monospace", fontSize: 12, marginBottom: 8 }}>{error}</p>}
         <button onClick={addSite} style={{ ...btnStyle, marginTop: 4, padding: "10px 18px" }}>+ Add Site</button>
       </div>
@@ -3048,7 +2989,9 @@ function SitesTab({ sites, onSitesChange }) {
               <div>
                 <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 13, color: "#1a1a1a" }}>{s.name}</span>
                 <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 11, color: "#C8A96E", marginLeft: 10 }}>→ {s.client}</span>
-                <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 11, color: "#888", marginLeft: 10 }}>OT {s.otMultiplier ?? 1.5}×</span>
+                {s.workAway
+                  ? <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 11, color: "#8a5a2b", marginLeft: 10 }}>Work away 1.25&times;</span>
+                  : <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 11, color: "#888", marginLeft: 10 }}>OT {s.otMultiplier ?? 1.5}&times;</span>}
                 {s.pricing === "fixed"
                   ? <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 10, color: "#1a6f4b", background: "#eaf6f0", borderRadius: 5, padding: "2px 7px", marginLeft: 10 }}>Fixed {toGBP(s.jobPrice || 0)}</span>
                   : <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 10, color: "#888", background: "#f2efeb", borderRadius: 5, padding: "2px 7px", marginLeft: 10 }}>Hourly</span>}
@@ -3083,9 +3026,9 @@ export default function App() {
     refreshBankHolidays(); // update UK bank-holiday dates from GOV.UK (falls back silently)
     Promise.all([
       load("finefit_entries"), loadStr("finefit_fitter_name"),
-      load("finefit_sites"), load("finefit_tasks"), load("finefit_rates"),
+      load("finefit_sites"), load("finefit_rates"),
       load("finefit_locked_weeks"), load("finefit_fitters"), load("finefit_pins"), load("finefit_no_indigo"), load("finefit_billed_jobs"), load("finefit_extra_days"), load("finefit_company_expenses"), load("finefit_excluded_expenses"),
-    ]).then(([entries, name, savedSites, _savedTasks, savedRates, savedLocks, savedFitters, savedPins, savedNoIndigo, savedBilled, savedExtra, savedCoExp, savedExcl]) => {
+    ]).then(([entries, name, savedSites, savedRates, savedLocks, savedFitters, savedPins, savedNoIndigo, savedBilled, savedExtra, savedCoExp, savedExcl]) => {
       setAllEntries(entries || []);
       if (name) setFitterName(name);
       setSites(savedSites || []);
