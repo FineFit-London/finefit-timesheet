@@ -1196,7 +1196,7 @@ function RatesTab({ allEntries, rates, fittersList, onRatesChange }) {
   return (
     <div>
       <p style={{ fontFamily: "'DM Mono', monospace", fontSize: 12, color: "#888", marginBottom: 16 }}>
-        One pair of rates per fitter \u2014 what you charge the client, and what you pay the fitter. The same rates apply on every site. Overtime and work-away uplifts are set per site in the Sites tab.
+        One pair of rates per fitter — what you charge the client, and what you pay the fitter. The same rates apply on every site. Overtime and work-away uplifts are set per site in the Sites tab.
       </p>
 
       {names.length === 0 ? (
@@ -1207,7 +1207,7 @@ function RatesTab({ allEntries, rates, fittersList, onRatesChange }) {
         <>
           <div style={{ border: "1px solid #e8e4de", borderRadius: 10, overflow: "hidden", marginBottom: 16 }}>
             <div style={{ display: "grid", gridTemplateColumns: "1.6fr 1fr 1fr", gap: 10, padding: "10px 14px", background: "#1a1a1a" }}>
-              {["Fitter", "Client rate \u00A3/hr", "Fitter rate \u00A3/hr"].map((h, i) => (
+              {["Fitter", "Client rate £/hr", "Fitter rate £/hr"].map((h, i) => (
                 <span key={i} style={{ fontFamily: "'DM Mono', monospace", fontSize: 10, color: "#C8A96E", textTransform: "uppercase", letterSpacing: "0.06em" }}>{h}</span>
               ))}
             </div>
@@ -1219,13 +1219,13 @@ function RatesTab({ allEntries, rates, fittersList, onRatesChange }) {
                     {f}{former && <span style={{ fontSize: 9, color: "#b7860b", marginLeft: 6 }}>former</span>}
                   </span>
                   <div style={{ position: "relative" }}>
-                    <span style={{ position: "absolute", left: 8, top: "50%", transform: "translateY(-50%)", fontFamily: "'DM Mono', monospace", fontSize: 11, color: "#aaa" }}>\u00A3</span>
+                    <span style={{ position: "absolute", left: 8, top: "50%", transform: "translateY(-50%)", fontFamily: "'DM Mono', monospace", fontSize: 11, color: "#aaa" }}>£</span>
                     <input value={getClient(f)} onChange={e => setEdit(f, "client", e.target.value)}
                       type="number" min="0" step="0.5" placeholder="0.00"
                       style={{ ...inputStyle, paddingLeft: 20, fontSize: 12, marginBottom: 0 }} />
                   </div>
                   <div style={{ position: "relative" }}>
-                    <span style={{ position: "absolute", left: 8, top: "50%", transform: "translateY(-50%)", fontFamily: "'DM Mono', monospace", fontSize: 11, color: "#aaa" }}>\u00A3</span>
+                    <span style={{ position: "absolute", left: 8, top: "50%", transform: "translateY(-50%)", fontFamily: "'DM Mono', monospace", fontSize: 11, color: "#aaa" }}>£</span>
                     <input value={getFitter(f)} onChange={e => setEdit(f, "fitter", e.target.value)}
                       type="number" min="0" step="0.5" placeholder="0.00"
                       style={{ ...inputStyle, paddingLeft: 20, fontSize: 12, marginBottom: 0 }} />
@@ -1236,11 +1236,11 @@ function RatesTab({ allEntries, rates, fittersList, onRatesChange }) {
           </div>
           {names.some(f => !roster.has(f)) && (
             <p style={{ fontFamily: "'DM Mono', monospace", fontSize: 11, color: "#b7860b", marginTop: 0, marginBottom: 12 }}>
-              \u201CFormer\u201D fitters have been removed from the Fitters list but still have submitted hours. Their rates are kept so past invoices stay correct.
+              “Former” fitters have been removed from the Fitters list but still have submitted hours. Their rates are kept so past invoices stay correct.
             </p>
           )}
           <button onClick={saveAll} style={{ ...btnStyle, marginTop: 0, padding: "11px 24px", background: saved ? "#2ecc71" : "#1a1a1a" }}>
-            {saved ? "\u2713 Saved!" : "Save All Rates"}
+            {saved ? "✓ Saved!" : "Save All Rates"}
           </button>
         </>
       )}
@@ -1279,7 +1279,7 @@ function ExpensesTab({ companyExpenses, sites, allEntries, excludedExpenses, onC
 
   const addExpense = async () => {
     if (!client) { setError("Pick which company this is for."); return; }
-    if (!description.trim()) { setError("Add a short description, e.g. Hotel \u2013 2 nights."); return; }
+    if (!description.trim()) { setError("Add a short description, e.g. Hotel – 2 nights."); return; }
     const amt = parseFloat(amount);
     if (isNaN(amt) || amt <= 0) { setError("Enter a valid amount."); return; }
     if (!date) { setError("Pick the date it was incurred."); return; }
@@ -1352,7 +1352,7 @@ function ExpensesTab({ companyExpenses, sites, allEntries, excludedExpenses, onC
             <label style={labelStyle}>Description</label>
             <input value={description} onChange={e => { setDescription(e.target.value); setError(""); }}
               onKeyDown={e => e.key === "Enter" && addExpense()}
-              placeholder="e.g. Hotel \u2013 2 nights, Flight to Glasgow" style={inputStyle} />
+              placeholder="e.g. Hotel – 2 nights, Flight to Glasgow" style={inputStyle} />
           </div>
           <div>
             <label style={labelStyle}>Amount</label>
@@ -1810,7 +1810,7 @@ function InvoicesTab({ allEntries, rates, sites, lockedWeeks, noIndigo, billedJo
       </tr>` : "";
       const otRow = l.overtimeHours > 0 ? `
       <tr>
-        <td>${l.fitter}</td><td>${l.site} <span style="color:#888">(${l.uplift} ${l.mult}\u00D7)</span></td>
+        <td>${l.fitter}</td><td>${l.site} <span style="color:#888">(${l.uplift} ${l.mult}×)</span></td>
         <td style="text-align:right">${l.overtimeHours.toFixed(2)}</td>
         <td style="text-align:right">£${l.otClientRate.toFixed(2)}</td>
         <td style="text-align:right"><strong>£${(l.overtimeHours * l.otClientRate).toFixed(2)}</strong></td>
@@ -1827,7 +1827,7 @@ function InvoicesTab({ allEntries, rates, sites, lockedWeeks, noIndigo, billedJo
       </tr>`).join("");
     // Extra / variation days on fixed jobs, billed hourly on top
     const extraRows = extraLines.map(l => {
-      const label = `${l.site} <span style="color:#888">(extra work \u2014 ${l.day} ${l.date}${l.overtimeHours > 0 ? `, incl. ${l.uplift} ${l.mult}\u00D7` : ""})</span>`;
+      const label = `${l.site} <span style="color:#888">(extra work — ${l.day} ${l.date}${l.overtimeHours > 0 ? `, incl. ${l.uplift} ${l.mult}×` : ""})</span>`;
       const hrs = (l.normalHours + l.overtimeHours).toFixed(2);
       return `<tr>
         <td>${l.fitter}</td><td>${label}</td>
@@ -1896,7 +1896,7 @@ function InvoicesTab({ allEntries, rates, sites, lockedWeeks, noIndigo, billedJo
       <tr style="background:#fff8f0">
         <td style="padding:7px 10px">${++rowNum}</td>
         <td style="padding:7px 10px"><strong>${l.fitter}</strong></td>
-        <td style="padding:7px 10px;color:#b7860b;font-size:11px;">${l.uplift} ${l.mult}\u00D7</td>
+        <td style="padding:7px 10px;color:#b7860b;font-size:11px;">${l.uplift} ${l.mult}×</td>
         <td style="padding:7px 10px;text-align:right">${l.overtimeHours.toFixed(2)}</td>
         <td style="padding:7px 10px;text-align:right">£${l.otFitterRate.toFixed(2)}</td>
         <td style="padding:7px 10px;text-align:right"><strong>£${(l.overtimeHours * l.otFitterRate).toFixed(2)}</strong></td>
@@ -1938,23 +1938,64 @@ function InvoicesTab({ allEntries, rates, sites, lockedWeeks, noIndigo, billedJo
     openDoc(html);
   };
 
-  // Xero CSV
-  const downloadXeroCSV = () => {
-    const headers = ["ContactName","InvoiceNumber","InvoiceDate","DueDate","Description","Quantity","UnitAmount","AccountCode","TaxType","Currency"];
-    const rows = [
-      ...hourlyLines.flatMap(l => {
-        const out = [];
-        if (l.normalHours > 0) out.push([contactName, invoiceNum, invoiceDate, dueDate, `${l.fitter} - ${l.site}`, l.normalHours.toFixed(2), l.clientRate.toFixed(2), "200", "RRSINPUT", "GBP"]);
-        if (l.overtimeHours > 0) out.push([contactName, invoiceNum, invoiceDate, dueDate, `${l.fitter} - ${l.site} (overtime ${l.mult}x)`, l.overtimeHours.toFixed(2), l.otClientRate.toFixed(2), "200", "RRSINPUT", "GBP"]);
-        return out;
-      }),
-      ...fixedJobs.filter(j => j.billedHere).map(j => [contactName, invoiceNum, invoiceDate, dueDate, `${j.site.name} - fixed price for the job`, "1", (j.site.jobPrice || 0).toFixed(2), "200", "RRSINPUT", "GBP"]),
-      ...extraLines.map(l => [contactName, invoiceNum, invoiceDate, dueDate, `${l.fitter} - ${l.site} extra work ${l.date}`, (l.normalHours + l.overtimeHours).toFixed(2), l.clientRate.toFixed(2), "200", "RRSINPUT", "GBP"]),
-      ...(totalExpenses > 0 ? [[contactName, invoiceNum, invoiceDate, dueDate, "Materials and Expenses", "1", totalExpenses.toFixed(2), "200", "RRSINPUT", "GBP"]] : [])
-    ];
+  // Indigo payment CSV — matches Indigo's spreadsheet layout:
+  // one row per fitter per RATE (normal, then each overtime/work-away rate),
+  // with repeating Hours / Gross / Site Ref blocks, followed by an EXPENSES row.
+  const downloadIndigoCSV = () => {
+    // Group each fitter's work by the rate it's paid at
+    const byFitter = {};
+    indigoLines.forEach(l => {
+      const f = byFitter[l.fitter] || (byFitter[l.fitter] = { fitter: l.fitter, rates: {}, expTotal: 0 });
+      const push = (rate, hours, site) => {
+        if (!(hours > 0)) return;
+        const key = rate.toFixed(4);
+        const bucket = f.rates[key] || (f.rates[key] = { rate, order: 0, sites: [] });
+        bucket.sites.push({ site, hours, gross: hours * rate });
+      };
+      push(l.fitterRate, l.normalHours, l.site);
+      push(l.otFitterRate, l.overtimeHours, l.site);
+      f.expTotal += (l.expenses || []).reduce((a, e) => a + (e.amount || 0), 0);
+    });
+
+    // How many site blocks we need (Indigo's sheet uses 5)
+    let maxSites = 5;
+    Object.values(byFitter).forEach(f => Object.values(f.rates).forEach(r => { maxSites = Math.max(maxSites, r.sites.length); }));
+
+    const headers = ["Merit ID", "Name", "Rate", ...Array.from({ length: maxSites }).flatMap(() => ["Hours", "Gross", "Site Ref"]), "", "Total"];
+    const money = (n) => n.toFixed(2);
+    const rows = [];
+
+    Object.values(byFitter)
+      .sort((a, b) => a.fitter.localeCompare(b.fitter))
+      .forEach(f => {
+        // Lowest rate first, so the normal rate leads and uplifted rates follow
+        const rateRows = Object.values(f.rates).sort((a, b) => a.rate - b.rate);
+        rateRows.forEach((r, idx) => {
+          const cells = [];
+          let total = 0;
+          for (let i = 0; i < maxSites; i++) {
+            const s = r.sites[i];
+            if (s) { cells.push(s.hours.toFixed(2), money(s.gross), s.site); total += s.gross; }
+            else { cells.push("", "", ""); }
+          }
+          rows.push(["", f.fitter, money(r.rate), ...cells, "", money(total)]);
+          // Expenses sit against the fitter's first rate row
+          const expCells = [];
+          for (let i = 0; i < maxSites; i++) {
+            expCells.push(i === 0 ? "EXPENSES" : "", i === 0 && idx === 0 && f.expTotal > 0 ? money(f.expTotal) : "", "EXPENSE");
+          }
+          rows.push(["", f.fitter, "", ...expCells, "", money(idx === 0 ? f.expTotal : 0)]);
+        });
+      });
+
+    if (rows.length === 0) { alert("No fitter hours to export for this period."); return; }
+
     const csv = [headers, ...rows].map(r => r.map(v => `"${String(v).replace(/"/g, '""')}"`).join(",")).join("\n");
     const blob = new Blob([csv], { type: "text/csv" });
-    const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = `${invoiceNum}_xero.csv`; a.click();
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = `FineFit_Indigo_${(filterWeek === "all" ? "all" : filterWeek)}.csv`;
+    a.click();
   };
 
   // Client expenses sheet — itemised costs with a total, to send alongside the invoice.
@@ -2152,7 +2193,7 @@ function InvoicesTab({ allEntries, rates, sites, lockedWeeks, noIndigo, billedJo
 
     if (unplaced.length > 0) {
       alert(
-        `Heads up \u2014 ${unplaced.length} entr${unplaced.length === 1 ? "y is" : "ies are"} missing from this timesheet because the date doesn't fall in this fortnight:\n\n` +
+        `Heads up — ${unplaced.length} entr${unplaced.length === 1 ? "y is" : "ies are"} missing from this timesheet because the date doesn't fall in this fortnight:\n\n` +
         unplaced.join("\n") +
         `\n\nOpen the Timesheets tab, edit those entries and pick the correct date, then generate this again.`
       );
@@ -2507,10 +2548,10 @@ function InvoicesTab({ allEntries, rates, sites, lockedWeeks, noIndigo, billedJo
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8 }}>
             <button onClick={printClientInvoice} style={{ ...btnStyle, marginTop: 0, padding: "12px 8px", fontSize: 12, textAlign: "center" }}>🖨️ Client Invoice</button>
             <button onClick={printIndigoSheet} style={{ ...btnStyle, marginTop: 0, padding: "12px 8px", fontSize: 12, textAlign: "center", background: "#2c3e50" }}>📋 Indigo Sheet</button>
-            <button onClick={downloadXeroCSV} style={{ ...btnStyle, marginTop: 0, padding: "12px 8px", fontSize: 12, textAlign: "center", background: "#0078D7" }}>⬇ Xero CSV</button>
+            <button onClick={downloadIndigoCSV} style={{ ...btnStyle, marginTop: 0, padding: "12px 8px", fontSize: 12, textAlign: "center", background: "#2c3e50" }}>⬇ Indigo CSV</button>
           </div>
           <p style={{ fontFamily: "'DM Mono', monospace", fontSize: 10, color: "#aaa", textAlign: "center", marginTop: 8 }}>
-            Xero: Business → Invoices → Import → upload CSV
+            Indigo CSV opens in Excel — matches Indigo's payment sheet layout
           </p>
         </>
       )}
@@ -2960,7 +3001,7 @@ function SitesTab({ sites, onSitesChange }) {
             <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 12, color: "#1a1a1a" }}>Work away job</span>
           </label>
           <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 11, color: "#aaa" }}>
-            Every hour on this job is paid and charged at 1.25&times; \u2014 this replaces the usual overtime rules.
+            Every hour on this job is paid and charged at 1.25&times; — this replaces the usual overtime rules.
           </span>
         </div>
         {!workAway && (
