@@ -312,7 +312,7 @@ function FitterLogin({ fittersList, pins, onSetPin, onLogin }) {
 }
 
 // ---------- FITTER FORM ----------
-function FitterForm({ fitterName, onLogout, onSubmit, sites, allEntries, lockedWeeks, rates, onDeleteRecord, onUpdateRecord }) {
+function FitterForm({ fitterName, onLogout, onSubmit, sites, allEntries, lockedWeeks, rates, noIndigo, fitterDetails, onSaveFitterDetails, onDeleteRecord, onUpdateRecord }) {
   const periodDays = getPeriodDays();
   // Days this fitter has already submitted this fortnight, so we can default to the next one
   const submittedIsos = new Set(
@@ -841,7 +841,7 @@ function FitterForm({ fitterName, onLogout, onSubmit, sites, allEntries, lockedW
       {error && <p style={{ color: "#c0392b", fontFamily: "'DM Mono', monospace", fontSize: 12, marginTop: 16 }}>{error}</p>}
       <button onClick={buildAndConfirm} style={{ ...btnStyle, marginTop: 16, width: "100%" }}>Review & Submit</button>
 
-      <MyPaySummary fitterName={fitterName} allEntries={allEntries || []} sites={sites} rates={rates || {}} />
+      <MyPaySummary fitterName={fitterName} allEntries={allEntries || []} sites={sites} rates={rates || {}} noIndigo={noIndigo || []} fitterDetails={fitterDetails || {}} onSaveFitterDetails={onSaveFitterDetails} />
 
       <MyWeekSubmissions
         fitterName={fitterName}
@@ -856,8 +856,50 @@ function FitterForm({ fitterName, onLogout, onSubmit, sites, allEntries, lockedW
 }
 
 // ---------- MY PAY (private to the logged-in fitter) ----------
-function MyPaySummary({ fitterName, allEntries, sites, rates }) {
+function openDoc(html) {
+    const toolbar = `
+      <div class="ff-bar">
+        <button onclick="ffClose()" class="ff-btn ff-back">← Close</button>
+        <button onclick="window.print()" class="ff-btn ff-print">🖨️ Print / Save PDF</button>
+      </div>
+      <script>
+        function ffClose(){
+          window.close();
+          // Some phone browsers block window.close(); fall back to going back, then show a hint.
+          setTimeout(function(){
+            if(!window.closed){
+              if(history.length > 1){ history.back(); }
+              else { document.getElementById('ff-hint').style.display = 'block'; }
+            }
+          }, 150);
+        }
+      <\/script>
+      <div id="ff-hint" style="display:none;background:#fff8e8;border:1px solid #f39c12;color:#8a6d3b;
+        padding:10px 14px;margin:0 0 16px 0;font-family:Arial,sans-serif;font-size:13px;border-radius:6px;">
+        Close this tab to go back to FineFit.
+      </div>
+      <style>
+        .ff-bar{position:sticky;top:0;display:flex;gap:10px;justify-content:space-between;
+          background:#1a1a1a;padding:10px 14px;margin:-40px -40px 24px -40px;z-index:99;}
+        .ff-btn{font-family:Arial,sans-serif;font-size:14px;padding:10px 16px;border-radius:6px;
+          border:none;cursor:pointer;}
+        .ff-back{background:#fff;color:#1a1a1a;}
+        .ff-print{background:#C8A96E;color:#1a1a1a;font-weight:bold;}
+        @media print{.ff-bar,#ff-hint{display:none !important;}}
+      </style>`;
+    const win = window.open("", "_blank");
+    if (!win) { alert("Please allow pop-ups for this site so the invoice can open."); return; }
+    // Inject the toolbar right after <body>
+    const withBar = html.replace(/<body>/, "<body>" + toolbar);
+    win.document.write(withBar);
+    win.document.close();
+    win.focus();
+  }
+
+function MyPaySummary({ fitterName, allEntries, sites, rates, noIndigo, fitterDetails, onSaveFitterDetails }) {
   const [show, setShow] = useState(false);
+  const [editingAddress, setEditingAddress] = useState(false);
+  const [addressDraft, setAddressDraft] = useState("");
   const thisPeriod = getWeekKey();
   const siteMult = (siteName) => multiplierForSite((sites || []).find(x => x.name === siteName));
 
@@ -876,7 +918,6 @@ function MyPaySummary({ fitterName, allEntries, sites, rates }) {
 
   let anyRate = false;
   const rows = Object.values(bySite).map(s => {
-    const rk = `${fitterName}|||${s.site}`;
     const rate = fitterRateOf(rates, fitterName);
     if (rate > 0) anyRate = true;
     const mult = siteMult(s.site);
@@ -885,6 +926,79 @@ function MyPaySummary({ fitterName, allEntries, sites, rates }) {
   });
   const totalPay = rows.reduce((a, r) => a + r.pay, 0);
   const totalHours = rows.reduce((a, r) => a + r.normalHours + r.overtimeHours, 0);
+
+  // Expenses this fitter is owed back this fortnight
+  const myExpenses = allEntries
+    .filter(r => r.fitter === fitterName && r.weekKey === thisPeriod)
+    .flatMap(r => (r.entries || []).flatMap(en => (en.expenses || []).map(x => ({ ...x, date: en.date }))));
+  const expTotal = myExpenses.reduce((a, x) => a + (x.amount || 0), 0);
+
+  // A pay statement the fitter can keep for their own records.
+  const paidVia = (noIndigo || []).includes(fitterName) ? "FineFit London" : "Indigo";
+  const myAddress = (fitterDetails || {})[fitterName]?.address || "";
+  const printMyInvoice = () => {
+    if (!anyRate) { alert("Your pay rate hasn't been set yet, so a statement can't be worked out. Ask Tom to set your rate."); return; }
+    const start = new Date(thisPeriod + "T00:00:00");
+    const end = new Date(start); end.setDate(end.getDate() + 13);
+    const fmt = (d) => d.toLocaleDateString("en-GB");
+    const initials = fitterName.split(" ").map(w => w[0] || "").join("").toUpperCase();
+    const invNo = `${initials}-${thisPeriod.replace(/-/g, "")}`;
+    const addressHtml = myAddress
+      ? `<div class="mut" style="margin-top:6px;white-space:pre-line;">${myAddress.replace(/</g, "&lt;")}</div>`
+      : "";
+
+    const workRows = rows.map(r => {
+      const out = [];
+      if (r.normalHours > 0) out.push(`<tr><td>${r.site}</td><td class="num">${r.normalHours.toFixed(2)}</td><td class="num">${toGBP(r.rate)}</td><td class="num">${toGBP(r.normalHours * r.rate)}</td></tr>`);
+      if (r.overtimeHours > 0) {
+        const s = (sites || []).find(x => x.name === r.site);
+        out.push(`<tr><td>${r.site} <span class="mut">(${upliftLabel(s)} ${r.mult}×)</span></td><td class="num">${r.overtimeHours.toFixed(2)}</td><td class="num">${toGBP(r.rate * r.mult)}</td><td class="num">${toGBP(r.overtimeHours * r.rate * r.mult)}</td></tr>`);
+      }
+      return out.join("");
+    }).join("");
+    const expRows = myExpenses.length > 0
+      ? myExpenses.map(x => `<tr><td>Expense — ${x.description || ""} <span class="mut">${x.date || ""}</span></td><td class="num">1</td><td class="num">${toGBP(x.amount || 0)}</td><td class="num">${toGBP(x.amount || 0)}</td></tr>`).join("")
+      : "";
+
+    const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>Pay statement ${invNo} - ${fitterName}</title>
+      <style>
+        body{font-family:Arial,Helvetica,sans-serif;color:#1a1a1a;margin:34px;font-size:13px;}
+        .top{display:flex;justify-content:space-between;align-items:flex-start;border-bottom:2px solid #1a1a1a;padding-bottom:10px;}
+        h1{font-size:22px;margin:0;letter-spacing:1px;}
+        .mut{color:#888;font-size:11px;}
+        .meta{text-align:right;font-size:12px;}
+        .who{display:flex;gap:40px;margin:20px 0;}
+        .lbl{font-size:10px;letter-spacing:1px;color:#888;text-transform:uppercase;margin-bottom:3px;}
+        table{border-collapse:collapse;width:100%;margin-top:8px;}
+        th{background:#1a1a1a;color:#fff;text-align:left;font-size:11px;padding:7px 8px;}
+        td{border-bottom:1px solid #eee;padding:7px 8px;}
+        .num{text-align:right;}
+        .tot td{border-top:2px solid #1a1a1a;border-bottom:none;font-weight:bold;font-size:15px;padding-top:10px;}
+        .note{margin-top:22px;font-size:11px;color:#888;line-height:1.5;}
+        @media print{ body{margin:12px;} }
+      </style></head><body>
+      <div class="top">
+        <div><h1>${fitterName}</h1><div class="mut">Self-employed fitter</div>${addressHtml}</div>
+        <div class="meta"><div><strong>PAY STATEMENT</strong></div><div>Ref. ${invNo}</div><div>${fmt(new Date())}</div></div>
+      </div>
+      <div class="who">
+        <div><div class="lbl">Paid via</div>${paidVia}</div>
+        <div><div class="lbl">Period</div>${fmt(start)} – ${fmt(end)}</div>
+      </div>
+      <table>
+        <thead><tr><th>Description</th><th class="num">Hours</th><th class="num">Rate</th><th class="num">Amount</th></tr></thead>
+        <tbody>
+          ${workRows}${expRows}
+          <tr class="tot"><td colspan="3">Total for this period</td><td class="num">${toGBP(totalPay + expTotal)}</td></tr>
+        </tbody>
+      </table>
+      <div class="note">
+        Labour ${toGBP(totalPay)}${expTotal > 0 ? ` &nbsp;·&nbsp; Expenses reimbursed ${toGBP(expTotal)}` : ""} &nbsp;·&nbsp; ${totalHours.toFixed(2)} hours total.<br/>
+        Statement of hours submitted to FineFit London for the period shown. Keep for your own records.
+      </div>
+      </body></html>`;
+    openDoc(html);
+  };
 
   return (
     <div style={{ marginTop: 28 }}>
@@ -914,6 +1028,35 @@ function MyPaySummary({ fitterName, allEntries, sites, rates }) {
           <div style={{ padding: "10px 14px", background: "#faf6ef", display: "flex", justifyContent: "space-between" }}>
             <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 12, color: "#888" }}>Total ({totalHours.toFixed(1)} hrs)</span>
             {anyRate && <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 14, color: "#C8A96E", fontWeight: 700 }}>{toGBP(totalPay)}</span>}
+          </div>
+          <div style={{ padding: "10px 14px", background: "#fff", borderTop: "1px solid #f5f2ed" }}>
+            {editingAddress ? (
+              <div>
+                <label style={{ ...labelStyle, marginBottom: 6 }}>Your address</label>
+                <textarea value={addressDraft} onChange={e => setAddressDraft(e.target.value)} rows={4}
+                  placeholder={"e.g.\n12 Example Road\nLondon\nSE13 7DP"}
+                  style={{ ...inputStyle, marginBottom: 8, resize: "vertical", lineHeight: 1.4 }} />
+                <div style={{ display: "flex", gap: 8 }}>
+                  <button onClick={async () => { await onSaveFitterDetails(fitterName, { ...(fitterDetails?.[fitterName] || {}), address: addressDraft.trim() }); setEditingAddress(false); }}
+                    style={{ ...btnStyle, marginTop: 0, padding: "9px 16px", fontSize: 12 }}>Save address</button>
+                  <button onClick={() => { setAddressDraft(myAddress); setEditingAddress(false); }}
+                    style={{ fontFamily: "'DM Mono', monospace", fontSize: 12, background: "none", border: "1px solid #e0dbd4", borderRadius: 8, padding: "9px 14px", cursor: "pointer", color: "#888" }}>Cancel</button>
+                </div>
+              </div>
+            ) : (
+              <button onClick={() => { setAddressDraft(myAddress); setEditingAddress(true); }}
+                style={{ width: "100%", fontFamily: "'DM Mono', monospace", fontSize: 11, background: "none", border: "1px dashed #e0dbd4", borderRadius: 8, padding: "9px 12px", cursor: "pointer", color: myAddress ? "#555" : "#888", textAlign: "left", whiteSpace: "pre-line" }}>
+                {myAddress ? `📍 ${myAddress}` : "📍 Add your address (saved for future statements)"}
+              </button>
+            )}
+          </div>
+          <div style={{ padding: "10px 14px", background: "#fff", borderTop: "1px solid #f5f2ed" }}>
+            <button onClick={printMyInvoice} style={{ width: "100%", fontFamily: "'DM Mono', monospace", fontSize: 12, background: "#C8A96E", border: "none", borderRadius: 8, padding: "11px 14px", cursor: "pointer", color: "#1a1a1a", fontWeight: 700 }}>
+              🧾 My pay statement for this fortnight
+            </button>
+            <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 10, color: "#bbb", display: "block", marginTop: 6 }}>
+              Opens a statement you can screenshot or save as a PDF for your own records.
+            </span>
           </div>
           <div style={{ padding: "8px 14px", background: "#fff" }}>
             <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 10, color: "#bbb" }}>Estimate based on submitted hours. Final pay is confirmed by Tom.</span>
@@ -1464,7 +1607,6 @@ function EarningsTab({ allEntries, rates, sites, noIndigo, billedJobs, extraDays
     record.entries.forEach(en => {
       let nh = en.normalHours, oh = en.overtimeHours;
       if (nh === undefined || oh === undefined) { const s = splitOvertime(en.day, en.hours || 0, en.date, (sites || []).find(x => x.name === en.siteName)?.workAway); nh = s.normal; oh = s.overtime; }
-      const rk = `${record.fitter}|||${en.siteName}`;
       const fixed = isFixedSite(en.siteName);
       const dayKey = `${record.id}::${en.date}::${en.siteId}`;
       const isExtra = fixed && !!(extraDays || {})[dayKey];
@@ -1759,45 +1901,6 @@ function InvoicesTab({ allEntries, rates, sites, lockedWeeks, noIndigo, billedJo
 
   // Print client invoice
   // Opens generated HTML in a new window with a visible Back/Print bar so the user is never trapped.
-  const openDoc = (html) => {
-    const toolbar = `
-      <div class="ff-bar">
-        <button onclick="ffClose()" class="ff-btn ff-back">← Close</button>
-        <button onclick="window.print()" class="ff-btn ff-print">🖨️ Print / Save PDF</button>
-      </div>
-      <script>
-        function ffClose(){
-          window.close();
-          // Some phone browsers block window.close(); fall back to going back, then show a hint.
-          setTimeout(function(){
-            if(!window.closed){
-              if(history.length > 1){ history.back(); }
-              else { document.getElementById('ff-hint').style.display = 'block'; }
-            }
-          }, 150);
-        }
-      <\/script>
-      <div id="ff-hint" style="display:none;background:#fff8e8;border:1px solid #f39c12;color:#8a6d3b;
-        padding:10px 14px;margin:0 0 16px 0;font-family:Arial,sans-serif;font-size:13px;border-radius:6px;">
-        Close this tab to go back to FineFit.
-      </div>
-      <style>
-        .ff-bar{position:sticky;top:0;display:flex;gap:10px;justify-content:space-between;
-          background:#1a1a1a;padding:10px 14px;margin:-40px -40px 24px -40px;z-index:99;}
-        .ff-btn{font-family:Arial,sans-serif;font-size:14px;padding:10px 16px;border-radius:6px;
-          border:none;cursor:pointer;}
-        .ff-back{background:#fff;color:#1a1a1a;}
-        .ff-print{background:#C8A96E;color:#1a1a1a;font-weight:bold;}
-        @media print{.ff-bar,#ff-hint{display:none !important;}}
-      </style>`;
-    const win = window.open("", "_blank");
-    if (!win) { alert("Please allow pop-ups for this site so the invoice can open."); return; }
-    // Inject the toolbar right after <body>
-    const withBar = html.replace(/<body>/, "<body>" + toolbar);
-    win.document.write(withBar);
-    win.document.close();
-    win.focus();
-  };
 
   const printClientInvoice = () => {
     const rows = hourlyLines.map(l => {
@@ -3061,6 +3164,7 @@ export default function App() {
   const [extraDays, setExtraDays] = useState({}); // on fixed jobs, days Tom marks as chargeable extras: { dayKey: true }
   const [companyExpenses, setCompanyExpenses] = useState([]); // Tom's own costs per client (hotels, flights...)
   const [excludedExpenses, setExcludedExpenses] = useState({}); // expenses Tom won't pass on: { expKey: true }
+  const [fitterDetails, setFitterDetails] = useState({}); // each fitter's own address for their pay statement
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -3068,8 +3172,8 @@ export default function App() {
     Promise.all([
       load("finefit_entries"), loadStr("finefit_fitter_name"),
       load("finefit_sites"), load("finefit_rates"),
-      load("finefit_locked_weeks"), load("finefit_fitters"), load("finefit_pins"), load("finefit_no_indigo"), load("finefit_billed_jobs"), load("finefit_extra_days"), load("finefit_company_expenses"), load("finefit_excluded_expenses"),
-    ]).then(([entries, name, savedSites, savedRates, savedLocks, savedFitters, savedPins, savedNoIndigo, savedBilled, savedExtra, savedCoExp, savedExcl]) => {
+      load("finefit_locked_weeks"), load("finefit_fitters"), load("finefit_pins"), load("finefit_no_indigo"), load("finefit_billed_jobs"), load("finefit_extra_days"), load("finefit_company_expenses"), load("finefit_excluded_expenses"), load("finefit_fitter_details"),
+    ]).then(([entries, name, savedSites, savedRates, savedLocks, savedFitters, savedPins, savedNoIndigo, savedBilled, savedExtra, savedCoExp, savedExcl, savedDetails]) => {
       setAllEntries(entries || []);
       if (name) setFitterName(name);
       setSites(savedSites || []);
@@ -3082,6 +3186,7 @@ export default function App() {
       setExtraDays(savedExtra || {});
       setCompanyExpenses(savedCoExp || []);
       setExcludedExpenses(savedExcl || {});
+      setFitterDetails(savedDetails || {});
       setLoading(false);
     });
   }, []);
@@ -3100,6 +3205,10 @@ export default function App() {
   const handleSetPin = async (name, hash) => { const u = { ...pins, [name]: hash }; setPins(u); await save("finefit_pins", u); };
   const handleResetPin = async (name) => { const u = { ...pins }; delete u[name]; setPins(u); await save("finefit_pins", u); };
   const handleCompanyExpensesChange = async (u) => { setCompanyExpenses(u); await save("finefit_company_expenses", u); };
+  const handleSaveFitterDetails = async (name, details) => {
+    const u = { ...fitterDetails, [name]: details };
+    setFitterDetails(u); await save("finefit_fitter_details", u);
+  };
   const handleToggleExcludedExpense = async (key) => { const u = { ...excludedExpenses }; if (u[key]) delete u[key]; else u[key] = true; setExcludedExpenses(u); await save("finefit_excluded_expenses", u); };
   const handleToggleExtraDay = async (dayKey) => {
     const u = { ...extraDays };
@@ -3133,7 +3242,7 @@ export default function App() {
             <p style={{ textAlign: "center", fontFamily: "'DM Mono', monospace", color: "#aaa" }}>Loading…</p>
           ) : view === "fitter" ? (
             fitterName
-              ? <FitterForm fitterName={fitterName} onLogout={handleFitterLogout} onSubmit={handleSubmit} sites={sites}
+              ? <FitterForm fitterName={fitterName} onLogout={handleFitterLogout} onSubmit={handleSubmit} sites={sites} noIndigo={noIndigo} fitterDetails={fitterDetails} onSaveFitterDetails={handleSaveFitterDetails}
                   allEntries={allEntries} lockedWeeks={lockedWeeks} rates={rates} onDeleteRecord={handleDeleteRecord} onUpdateRecord={handleUpdateRecord} />
               : <FitterLogin fittersList={fittersList} pins={pins} onSetPin={handleSetPin} onLogin={async (n) => { await saveStr("finefit_fitter_name", n); setFitterName(n); }} />
           ) : view === "adminLogin" ? (
