@@ -563,6 +563,16 @@ function FitterForm({ fitterName, onLogout, onSubmit, sites, allEntries, lockedW
       }
     }));
 
+    // Already sent in an earlier submission this fortnight? (stops accidental double-logging)
+    const alreadySent = (allEntries || []).filter(r => r.fitter === fitterName && r.weekKey === getWeekKey());
+    builtEntries.forEach(ne => {
+      const clash = alreadySent.find(r => (r.entries || []).some(e => e.date === ne.date && e.siteId === ne.siteId));
+      if (clash) {
+        const when = new Date(ne.date + "T00:00:00").toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short" });
+        warnings.push(`You've already sent ${when} at ${ne.siteName}. Only send it again if you're adding extra hours.`);
+      }
+    });
+
     // Uplift notice (so they know it'll be paid at the higher rate)
     builtEntries.forEach(ne => {
       if (ne.overtimeHours > 0) {
@@ -1163,7 +1173,7 @@ function MyWeekSubmissions({ fitterName, allEntries, lockedWeeks, sites, onDelet
         ) : (
           <div key={record.id} style={{ marginBottom: 12, border: "1px solid #e8e4de", borderRadius: 10, overflow: "hidden" }}>
             <div style={{ padding: "10px 14px", background: "#f5f2ed", borderBottom: "1px solid #e8e4de", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-              <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 11, color: "#888" }}>Submitted {new Date(record.submittedAt).toLocaleDateString("en-GB")} · {record.entries.reduce((a,e)=>a+(e.hours||0),0).toFixed(1)} hrs</span>
+              <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 11, color: "#888" }}>Sent {new Date(record.submittedAt).toLocaleDateString("en-GB")} · {record.entries.reduce((a,e)=>a+(e.hours||0),0).toFixed(1)} hrs · days worked below</span>
               {locked ? (
                 <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 10, background: "#f0ece6", color: "#999", borderRadius: 6, padding: "4px 10px" }}>🔒 Invoiced</span>
               ) : (
@@ -1183,8 +1193,10 @@ function MyWeekSubmissions({ fitterName, allEntries, lockedWeeks, sites, onDelet
               </div>
             )}
             {record.entries.map((entry, i) => (
-              <div key={i} style={{ padding: "9px 14px", borderBottom: "1px solid #f5f2ed", display: "grid", gridTemplateColumns: "70px 1fr 50px", gap: 8 }}>
-                <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 11, color: "#aaa" }}>{entry.day?.slice(0,3)}</span>
+              <div key={i} style={{ padding: "9px 14px", borderBottom: "1px solid #f5f2ed", display: "grid", gridTemplateColumns: "96px 1fr 50px", gap: 8 }}>
+                <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 11, color: "#1a1a1a" }}>
+                  {entry.day?.slice(0,3)} {entry.date ? new Date(entry.date + "T00:00:00").toLocaleDateString("en-GB", { day: "numeric", month: "short" }) : ""}
+                </span>
                 <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 12, color: "#555" }}>{entry.siteName}</span>
                 <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 12, color: "#1a1a1a", textAlign: "right" }}>{entry.hours}h</span>
               </div>
