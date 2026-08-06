@@ -151,6 +151,26 @@ function multiplierForSite(site) {
 }
 function upliftLabel(site) { return site?.workAway ? "work away" : "overtime"; }
 
+// On a fixed-price job, Tom can charge part or all of a day as an extra.
+// extraDays[dayKey] holds the chargeable HOURS. Older data stored `true`,
+// which meant the whole day, so treat that as all of the logged hours.
+function extraHoursFor(extraDays, dayKey, loggedHours) {
+  const v = (extraDays || {})[dayKey];
+  const logged = Number(loggedHours) || 0;
+  if (v === true) return logged;
+  const n = Number(v);
+  if (!n || n <= 0) return 0;
+  return Math.min(n, logged);
+}
+
+// Split chargeable extra hours across the day's normal and uplifted portions.
+// Fills the normal portion first, so charging a whole day matches the day's own split.
+function splitExtra(extraHours, normalHours, overtimeHours) {
+  const e = Math.max(0, Math.min(Number(extraHours) || 0, (normalHours || 0) + (overtimeHours || 0)));
+  const normal = Math.min(e, normalHours || 0);
+  return { normal, overtime: e - normal };
+}
+
 // The 14 dates of a fortnight, each with its weekday name and a short label
 function getPeriodDays(periodStartKey) {
   const start = periodStartKey ? new Date(periodStartKey + "T00:00:00") : getPeriodStart();
@@ -320,7 +340,14 @@ function FitterForm({ fitterName, onLogout, onSubmit, sites, allEntries, lockedW
       .filter(r => r.fitter === fitterName && r.weekKey === getWeekKey())
       .flatMap(r => (r.entries || []).map(e => e.date))
   );
-  const firstFreeDay = periodDays.find(d => !submittedIsos.has(d.iso)) || periodDays[0];
+  // Default to today if it falls in this fortnight and hasn't been logged yet —
+  // fitters usually log at the end of the day. Otherwise use the first day they haven't done.
+  const todayIso = dateKey(new Date());
+  const todayInPeriod = periodDays.find(d => d.iso === todayIso);
+  const firstFreeDay =
+    (todayInPeriod && !submittedIsos.has(todayIso))
+      ? todayInPeriod
+      : (periodDays.find(d => !submittedIsos.has(d.iso)) || todayInPeriod || periodDays[0]);
   const emptyEntry = (day) => { const d = day || firstFreeDay; return { date: d.iso, day: d.dayName, siteId: "", hours: "", areas: [], areaDraft: "", expenses: [] }; };
   const emptyExpense = () => ({ description: "", amount: "", receipt: null });
   const draftKey = `finefit_draft_${fitterName}`;
@@ -1194,7 +1221,7 @@ function AdminLogin({ onLogin }) {
 }
 
 // ---------- ADMIN DASHBOARD ----------
-function AdminDashboard({ allEntries, sites, rates, lockedWeeks, fittersList, pins, noIndigo, billedJobs, onToggleBilledJob, extraDays, onToggleExtraDay, companyExpenses, onCompanyExpensesChange, excludedExpenses, onToggleExcludedExpense, onSitesChange, onRatesChange, onDeleteRecord, onUpdateRecord, onToggleLock, onFittersChange, onResetPin, onToggleIndigo, onLogout }) {
+function AdminDashboard({ allEntries, sites, rates, lockedWeeks, fittersList, pins, noIndigo, billedJobs, onToggleBilledJob, extraDays, onSetExtraDay, companyExpenses, onCompanyExpensesChange, excludedExpenses, onToggleExcludedExpense, onSitesChange, onRatesChange, onDeleteRecord, onUpdateRecord, onToggleLock, onFittersChange, onResetPin, onToggleIndigo, onLogout }) {
   const [tab, setTab] = useState("submissions");
   return (
     <div>
@@ -1213,7 +1240,7 @@ function AdminDashboard({ allEntries, sites, rates, lockedWeeks, fittersList, pi
         ))}
       </div>
       {tab === "submissions" && <SubmissionsTab allEntries={allEntries} sites={sites} lockedWeeks={lockedWeeks} fittersList={fittersList} onDeleteRecord={onDeleteRecord} onUpdateRecord={onUpdateRecord} />}
-      {tab === "report" && <InvoicesTab allEntries={allEntries} rates={rates} sites={sites} lockedWeeks={lockedWeeks} noIndigo={noIndigo} billedJobs={billedJobs} onToggleBilledJob={onToggleBilledJob} extraDays={extraDays} onToggleExtraDay={onToggleExtraDay} companyExpenses={companyExpenses} excludedExpenses={excludedExpenses} onToggleLock={onToggleLock} />}
+      {tab === "report" && <InvoicesTab allEntries={allEntries} rates={rates} sites={sites} lockedWeeks={lockedWeeks} noIndigo={noIndigo} billedJobs={billedJobs} onToggleBilledJob={onToggleBilledJob} extraDays={extraDays} onSetExtraDay={onSetExtraDay} companyExpenses={companyExpenses} excludedExpenses={excludedExpenses} onToggleLock={onToggleLock} />}
       {tab === "expenses" && <ExpensesTab companyExpenses={companyExpenses} sites={sites} allEntries={allEntries} excludedExpenses={excludedExpenses} onCompanyExpensesChange={onCompanyExpensesChange} onToggleExcludedExpense={onToggleExcludedExpense} />}
       {tab === "earnings" && <EarningsTab allEntries={allEntries} rates={rates} sites={sites} noIndigo={noIndigo} billedJobs={billedJobs} extraDays={extraDays} />}
       {tab === "rates" && <RatesTab allEntries={allEntries} rates={rates} fittersList={fittersList} onRatesChange={onRatesChange} />}
@@ -1609,13 +1636,16 @@ function EarningsTab({ allEntries, rates, sites, noIndigo, billedJobs, extraDays
       if (nh === undefined || oh === undefined) { const s = splitOvertime(en.day, en.hours || 0, en.date, (sites || []).find(x => x.name === en.siteName)?.workAway); nh = s.normal; oh = s.overtime; }
       const fixed = isFixedSite(en.siteName);
       const dayKey = `${record.id}::${en.date}::${en.siteId}`;
-      const isExtra = fixed && !!(extraDays || {})[dayKey];
-      // Hourly job → charge hourly. Fixed job → charge only flagged extra days hourly (fixed price added separately).
-      const cr = (!fixed || isExtra) ? clientRateOf(rates, record.fitter) : 0;
+      const extraHrs = fixed ? extraHoursFor(extraDays, dayKey, en.hours) : 0;
+      const cr = clientRateOf(rates, record.fitter);
       const fr = fitterRateOf(rates, record.fitter);
       const mult = siteMult(en.siteName);
-      const charged = nh * cr + oh * cr * mult;
-      // Tom (excluded from Indigo) has no payout, so all his charged time is margin
+      // Hourly job → charge all hours. Fixed job → charge only the hours marked as extras
+      // (the fixed price itself is added separately below).
+      const ch = fixed ? splitExtra(extraHrs, nh, oh) : { normal: nh, overtime: oh };
+      const charged = ch.normal * cr + ch.overtime * cr * mult;
+      // Fitters are always paid for every hour they worked, extra or not.
+      // Tom (excluded from Indigo) has no payout, so all his charged time is margin.
       const paid = excluded.has(record.fitter) ? 0 : (nh * fr + oh * fr * mult);
       rows.push({ period, fitter: record.fitter, client: en.client, site: en.siteName, charged, paid, profit: charged - paid, hours: nh + oh });
     });
@@ -1733,7 +1763,7 @@ function EarningsTab({ allEntries, rates, sites, noIndigo, billedJobs, extraDays
 }
 
 // ---------- INVOICES TAB ----------
-function InvoicesTab({ allEntries, rates, sites, lockedWeeks, noIndigo, billedJobs, onToggleBilledJob, extraDays, onToggleExtraDay, companyExpenses, excludedExpenses, onToggleLock }) {
+function InvoicesTab({ allEntries, rates, sites, lockedWeeks, noIndigo, billedJobs, onToggleBilledJob, extraDays, onSetExtraDay, companyExpenses, excludedExpenses, onToggleLock }) {
   const weeks = [...new Set(allEntries.map(e => e.weekKey))].sort().reverse();
   const clients = [...new Set(allEntries.flatMap(e => e.entries.map(en => en.client)).filter(Boolean))].sort();
   const [filterWeek, setFilterWeek] = useState(weeks[0] || "all");
@@ -1815,15 +1845,18 @@ function InvoicesTab({ allEntries, rates, sites, lockedWeeks, noIndigo, billedJo
     const entries = filterClient === "all" ? record.entries : record.entries.filter(en => en.client === filterClient);
     entries.forEach(en => {
       if (!isFixedSite(en.siteName)) return;              // only fixed jobs have "extras"
-      if (!(extraDays || {})[dayKeyOf(record.id, en)]) return; // only days Tom flagged
+      const chargeable = extraHoursFor(extraDays, dayKeyOf(record.id, en), en.hours);
+      if (chargeable <= 0) return;                        // only hours Tom has marked chargeable
       let nh = en.normalHours, oh = en.overtimeHours;
       if (nh === undefined || oh === undefined) { const s = splitOvertime(en.day, en.hours || 0, en.date, (sites || []).find(x => x.name === en.siteName)?.workAway); nh = s.normal; oh = s.overtime; }
-      const rateKey = `${record.fitter}|||${en.siteName}`;
+      // Charge only the hours marked as extra, filling the normal portion first
+      const part = splitExtra(chargeable, nh, oh);
       const cr = clientRateOf(rates, record.fitter);
       const mult = siteMult(en.siteName);
-      const cost = nh * cr + oh * cr * mult;
+      const cost = part.normal * cr + part.overtime * cr * mult;
       extraLines.push({ fitter: record.fitter, site: en.siteName, client: en.client, date: en.date, day: en.day,
-        normalHours: nh, overtimeHours: oh, mult, uplift: upliftLabel(siteByName(en.siteName)),
+        normalHours: part.normal, overtimeHours: part.overtime, chargeable, loggedHours: en.hours || 0,
+        mult, uplift: upliftLabel(siteByName(en.siteName)),
         clientRate: cr, otClientRate: cr * mult, cost, areas: entryAreas(en) });
     });
   });
@@ -1834,7 +1867,7 @@ function InvoicesTab({ allEntries, rates, sites, lockedWeeks, noIndigo, billedJo
   const timesheetClients = filterWeek === "all" ? [] : [...new Set(
     allEntries.filter(r => r.weekKey === filterWeek).flatMap(r =>
       r.entries
-        .filter(en => !isFixedSite(en.siteName) || !!(extraDays || {})[`${r.id}::${en.date}::${en.siteId}`])
+        .filter(en => !isFixedSite(en.siteName) || extraHoursFor(extraDays, `${r.id}::${en.date}::${en.siteId}`, en.hours) > 0)
         .map(en => en.client)
     ).filter(Boolean)
   )].sort();
@@ -2188,7 +2221,7 @@ function InvoicesTab({ allEntries, rates, sites, lockedWeeks, noIndigo, billedJo
     // A day appears on the client timesheet if it's an hourly-site day,
     // OR a fixed-site day Tom has flagged as a chargeable extra.
     const dayKeyOf = (recordId, en) => `${recordId}::${en.date}::${en.siteId}`;
-    const showsOnTimesheet = (r, en) => !isFixedSite(en.siteName) || !!(extraDays || {})[dayKeyOf(r.id, en)];
+    const showsOnTimesheet = (r, en) => !isFixedSite(en.siteName) || extraHoursFor(extraDays, dayKeyOf(r.id, en), en.hours) > 0;
 
     // Which clients to include
     const clientsInPeriod = [...new Set(
@@ -2237,8 +2270,10 @@ function InvoicesTab({ allEntries, rates, sites, lockedWeeks, noIndigo, billedJo
         allEntries.filter(r => r.weekKey === filterWeek).forEach(r => {
           r.entries.forEach(en => {
             if (en.client === client && showsOnTimesheet(r, en) && placeEntry(en)?.iso === d.iso) {
-              const hrs = en.hours || 0; weekTotal += hrs;
+              // On fixed jobs only the chargeable extra hours are shown to the client
               const extra = isFixedSite(en.siteName);
+              const hrs = extra ? extraHoursFor(extraDays, dayKeyOf(r.id, en), en.hours) : (en.hours || 0);
+              weekTotal += hrs;
               const desc = entryAreas(en).join(", ") + (extra ? " (extra work)" : "");
               rows.push(`<tr>
                 <td class="dcell"></td>
@@ -2571,20 +2606,32 @@ function InvoicesTab({ allEntries, rates, sites, lockedWeeks, noIndigo, billedJo
                         {billedElsewhere ? `Already billed ${periodLabelShort(j.billedIn)}` : j.billedHere ? "Price on this invoice" : "Price not billed yet"}
                       </span>
                     </div>
-                    {/* Flag individual days as chargeable extras (billed hourly on top) */}
+                    {/* Charge part or all of a day as an extra (billed hourly on top) */}
                     {jobDays.length > 0 && (
                       <div style={{ marginLeft: 26, marginTop: 6 }}>
-                        <div style={{ fontFamily: "'DM Mono', monospace", fontSize: 10, color: "#7a8f85", marginBottom: 4 }}>Tick any days that were extras / variations (billed hourly on top):</div>
+                        <div style={{ fontFamily: "'DM Mono', monospace", fontSize: 10, color: "#7a8f85", marginBottom: 5 }}>
+                          Extra / variation hours to charge on top. Leave blank if the day is covered by the fixed price.
+                        </div>
                         {jobDays.map(d => {
-                          const on = !!(extraDays || {})[d.key];
+                          const charged = extraHoursFor(extraDays, d.key, d.hours);
+                          const on = charged > 0;
                           return (
-                            <label key={d.key} style={{ display: "flex", alignItems: "center", gap: 8, padding: "3px 0", cursor: "pointer" }}>
-                              <input type="checkbox" checked={on} onChange={() => onToggleExtraDay(d.key)}
-                                style={{ width: 15, height: 15, accentColor: "#b5561f", cursor: "pointer" }} />
+                            <div key={d.key} style={{ display: "flex", alignItems: "center", gap: 8, padding: "4px 0", flexWrap: "wrap" }}>
+                              <input type="number" min="0" max={d.hours} step="0.5"
+                                value={charged > 0 ? charged : ""}
+                                onChange={e => onSetExtraDay(d.key, Math.min(parseFloat(e.target.value) || 0, d.hours))}
+                                placeholder="0"
+                                style={{ width: 58, fontFamily: "'DM Mono', monospace", fontSize: 12, padding: "5px 7px", borderRadius: 6,
+                                  border: `1px solid ${on ? "#b5561f" : "#e0dbd4"}`, color: on ? "#b5561f" : "#555", background: "#fff", textAlign: "right" }} />
+                              <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 10, color: "#aaa" }}>of {d.hours}h</span>
+                              <button onClick={() => onSetExtraDay(d.key, on ? 0 : d.hours)}
+                                style={{ fontFamily: "'DM Mono', monospace", fontSize: 9, background: "none", border: "1px solid #e0dbd4", borderRadius: 5, padding: "3px 7px", cursor: "pointer", color: "#888" }}>
+                                {on ? "clear" : "all"}
+                              </button>
                               <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 11, color: on ? "#b5561f" : "#888" }}>
-                                {d.day?.slice(0,3)} {d.date} · {d.fitter} · {d.hours}h{d.areas.length ? ` · ${d.areas.join(", ")}` : ""}
+                                {d.day?.slice(0,3)} {d.date} · {d.fitter}{d.areas.length ? ` · ${d.areas.join(", ")}` : ""}
                               </span>
-                            </label>
+                            </div>
                           );
                         })}
                       </div>
@@ -3210,9 +3257,10 @@ export default function App() {
     setFitterDetails(u); await save("finefit_fitter_details", u);
   };
   const handleToggleExcludedExpense = async (key) => { const u = { ...excludedExpenses }; if (u[key]) delete u[key]; else u[key] = true; setExcludedExpenses(u); await save("finefit_excluded_expenses", u); };
-  const handleToggleExtraDay = async (dayKey) => {
+  const handleSetExtraDay = async (dayKey, hours) => {
     const u = { ...extraDays };
-    if (u[dayKey]) delete u[dayKey]; else u[dayKey] = true;
+    const n = Number(hours) || 0;
+    if (n > 0) u[dayKey] = n; else delete u[dayKey];
     setExtraDays(u); await save("finefit_extra_days", u);
   };
   const handleToggleBilledJob = async (siteId, weekKey) => {
@@ -3249,7 +3297,7 @@ export default function App() {
             <AdminLogin onLogin={() => setView("admin")} />
           ) : (
             <AdminDashboard allEntries={allEntries} sites={sites} rates={rates}
-              lockedWeeks={lockedWeeks} fittersList={fittersList} pins={pins} noIndigo={noIndigo} billedJobs={billedJobs} onToggleBilledJob={handleToggleBilledJob} extraDays={extraDays} onToggleExtraDay={handleToggleExtraDay} companyExpenses={companyExpenses} onCompanyExpensesChange={handleCompanyExpensesChange} excludedExpenses={excludedExpenses} onToggleExcludedExpense={handleToggleExcludedExpense} onSitesChange={handleSitesChange}
+              lockedWeeks={lockedWeeks} fittersList={fittersList} pins={pins} noIndigo={noIndigo} billedJobs={billedJobs} onToggleBilledJob={handleToggleBilledJob} extraDays={extraDays} onSetExtraDay={handleSetExtraDay} companyExpenses={companyExpenses} onCompanyExpensesChange={handleCompanyExpensesChange} excludedExpenses={excludedExpenses} onToggleExcludedExpense={handleToggleExcludedExpense} onSitesChange={handleSitesChange}
               onRatesChange={handleRatesChange} onDeleteRecord={handleDeleteRecord} onFittersChange={handleFittersChange} onResetPin={handleResetPin} onToggleIndigo={handleToggleIndigo}
               onUpdateRecord={handleUpdateRecord} onToggleLock={handleToggleLock} onLogout={() => setView("fitter")} />
           )}
