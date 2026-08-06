@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 import { db } from "./firebase";
-import { doc, getDoc, setDoc } from "firebase/firestore";
+import { doc, getDoc, setDoc, deleteDoc, collection, getDocs, onSnapshot } from "firebase/firestore";
 
 const ADMIN_PASSWORD = "finefit2024";
 const DEVICE_ID = (() => {
@@ -203,6 +203,34 @@ async function loadStr(key) {
     return snap.exists() ? (snap.data()[key] || null) : null;
   } catch { return null; }
 }
+// ---------- SUBMISSIONS ----------
+// Each submission is its own document in the "entries" collection. This matters:
+// when everything lived in one shared document, whichever device saved last
+// overwrote submissions made by anyone else since that device loaded the app.
+async function saveEntry(record) {
+  await setDoc(doc(db, "entries", String(record.id)), record);
+}
+async function deleteEntry(recordId) {
+  await deleteDoc(doc(db, "entries", String(recordId)));
+}
+async function fetchEntries() {
+  const snap = await getDocs(collection(db, "entries"));
+  return snap.docs.map(d => ({ ...d.data(), id: d.data().id ?? d.id }));
+}
+// One-off move of the old single-document list into the collection.
+// Safe to run repeatedly: it only copies records that aren't there yet,
+// and it never deletes the old document, which stays as a backup.
+async function migrateLegacyEntries() {
+  try {
+    const legacy = (await load("finefit_entries")) || [];
+    if (!Array.isArray(legacy) || legacy.length === 0) return;
+    const existing = await fetchEntries();
+    const have = new Set(existing.map(r => String(r.id)));
+    const missing = legacy.filter(r => r && r.id !== undefined && !have.has(String(r.id)));
+    for (const r of missing) await saveEntry(r);
+  } catch (e) { console.error("entry migration failed", e); }
+}
+
 async function saveStr(key, val) {
   try { await setDoc(doc(db, "devices", DEVICE_ID), { [key]: val }, { merge: true }); } catch(e) { console.error(e); }
 }
@@ -564,7 +592,7 @@ function FitterForm({ fitterName, onLogout, onSubmit, sites, allEntries, lockedW
     });
 
     const record = {
-      id: Date.now(),
+      id: `${Date.now()}-${DEVICE_ID}-${Math.random().toString(36).slice(2, 7)}`,
       fitter: fitterName,
       deviceId: DEVICE_ID,
       weekKey: getWeekKey(),
@@ -3217,11 +3245,10 @@ export default function App() {
   useEffect(() => {
     refreshBankHolidays(); // update UK bank-holiday dates from GOV.UK (falls back silently)
     Promise.all([
-      load("finefit_entries"), loadStr("finefit_fitter_name"),
+      loadStr("finefit_fitter_name"),
       load("finefit_sites"), load("finefit_rates"),
       load("finefit_locked_weeks"), load("finefit_fitters"), load("finefit_pins"), load("finefit_no_indigo"), load("finefit_billed_jobs"), load("finefit_extra_days"), load("finefit_company_expenses"), load("finefit_excluded_expenses"), load("finefit_fitter_details"),
-    ]).then(([entries, name, savedSites, savedRates, savedLocks, savedFitters, savedPins, savedNoIndigo, savedBilled, savedExtra, savedCoExp, savedExcl, savedDetails]) => {
-      setAllEntries(entries || []);
+    ]).then(([name, savedSites, savedRates, savedLocks, savedFitters, savedPins, savedNoIndigo, savedBilled, savedExtra, savedCoExp, savedExcl, savedDetails]) => {
       if (name) setFitterName(name);
       setSites(savedSites || []);
       setRates(savedRates || {});
@@ -3238,11 +3265,31 @@ export default function App() {
     });
   }, []);
 
+  // Submissions: move any old data across, then keep every device in sync live.
+  // Without this, a device could hold a stale list and overwrite other people's hours.
+  useEffect(() => {
+    let unsub = null;
+    let cancelled = false;
+    (async () => {
+      await migrateLegacyEntries();
+      if (cancelled) return;
+      unsub = onSnapshot(
+        collection(db, "entries"),
+        (snap) => setAllEntries(snap.docs.map(d => ({ ...d.data(), id: d.data().id ?? d.id }))),
+        (err) => {
+          console.error("entries listener failed, falling back to a one-off read", err);
+          fetchEntries().then(setAllEntries).catch(() => {});
+        }
+      );
+    })();
+    return () => { cancelled = true; if (unsub) unsub(); };
+  }, []);
+
   const handleSitesChange = async (u) => { setSites(u); await save("finefit_sites", u); };
   const handleRatesChange = async (u) => { setRates(u); await save("finefit_rates", u); };
-  const handleSubmit = async (record) => { const u = [...allEntries, record]; setAllEntries(u); await save("finefit_entries", u); };
-  const handleDeleteRecord = async (recordId) => { const u = allEntries.filter(r => r.id !== recordId); setAllEntries(u); await save("finefit_entries", u); };
-  const handleUpdateRecord = async (recordId, updatedRecord) => { const u = allEntries.map(r => r.id === recordId ? updatedRecord : r); setAllEntries(u); await save("finefit_entries", u); };
+  const handleSubmit = async (record) => { setAllEntries(prev => [...prev.filter(r => String(r.id) !== String(record.id)), record]); await saveEntry(record); };
+  const handleDeleteRecord = async (recordId) => { setAllEntries(prev => prev.filter(r => String(r.id) !== String(recordId))); await deleteEntry(recordId); };
+  const handleUpdateRecord = async (recordId, updatedRecord) => { const merged = { ...updatedRecord, id: recordId }; setAllEntries(prev => prev.map(r => String(r.id) === String(recordId) ? merged : r)); await saveEntry(merged); };
   const handleFitterLogout = async () => { await del("finefit_fitter_name"); setFitterName(null); };
   const handleToggleLock = async (weekKey) => {
     const u = lockedWeeks.includes(weekKey) ? lockedWeeks.filter(w => w !== weekKey) : [...lockedWeeks, weekKey];
