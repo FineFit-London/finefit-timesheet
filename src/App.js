@@ -1261,7 +1261,7 @@ function AdminLogin({ onLogin }) {
 }
 
 // ---------- ADMIN DASHBOARD ----------
-function AdminDashboard({ allEntries, sites, rates, lockedWeeks, fittersList, pins, noIndigo, billedJobs, onToggleBilledJob, extraDays, onSetExtraDay, companyExpenses, onCompanyExpensesChange, excludedExpenses, onToggleExcludedExpense, onSitesChange, onRatesChange, onDeleteRecord, onUpdateRecord, onToggleLock, onFittersChange, onResetPin, onToggleIndigo, onLogout }) {
+function AdminDashboard({ allEntries, sites, rates, lockedWeeks, fittersList, pins, noIndigo, billedJobs, onToggleBilledJob, extraDays, onSetExtraDay, companyExpenses, onCompanyExpensesChange, clients, onClientsChange, onRenameClient, excludedExpenses, onToggleExcludedExpense, onSitesChange, onRatesChange, onDeleteRecord, onUpdateRecord, onToggleLock, onFittersChange, onResetPin, onToggleIndigo, onLogout }) {
   const [tab, setTab] = useState("submissions");
   return (
     <div>
@@ -1270,7 +1270,7 @@ function AdminDashboard({ allEntries, sites, rates, lockedWeeks, fittersList, pi
         <button onClick={onLogout} style={{ fontFamily: "'DM Mono', monospace", fontSize: 11, background: "none", border: "1px solid #ddd", borderRadius: 6, padding: "6px 12px", cursor: "pointer", color: "#888" }}>Log out</button>
       </div>
       <div style={{ display: "flex", gap: 4, marginBottom: 24, background: "#f5f2ed", borderRadius: 8, padding: 4 }}>
-        {[["submissions", "Timesheets"], ["report", "Invoices"], ["expenses", "Expenses"], ["earnings", "Earnings"], ["rates", "Rates"], ["fitters", "Fitters"], ["sites", "Sites"]].map(([key, label]) => (
+        {[["submissions", "Timesheets"], ["report", "Invoices"], ["expenses", "Expenses"], ["earnings", "Earnings"], ["rates", "Rates"], ["fitters", "Fitters"], ["clients", "Clients"], ["sites", "Sites"]].map(([key, label]) => (
           <button key={key} onClick={() => setTab(key)} style={{
             flex: 1, fontFamily: "'DM Mono', monospace", fontSize: 11, padding: "8px 0",
             border: "none", borderRadius: 6, cursor: "pointer",
@@ -1285,7 +1285,8 @@ function AdminDashboard({ allEntries, sites, rates, lockedWeeks, fittersList, pi
       {tab === "earnings" && <EarningsTab allEntries={allEntries} rates={rates} sites={sites} noIndigo={noIndigo} billedJobs={billedJobs} extraDays={extraDays} />}
       {tab === "rates" && <RatesTab allEntries={allEntries} rates={rates} fittersList={fittersList} onRatesChange={onRatesChange} />}
       {tab === "fitters" && <FittersTab fittersList={fittersList} allEntries={allEntries} pins={pins} noIndigo={noIndigo} onFittersChange={onFittersChange} onResetPin={onResetPin} onToggleIndigo={onToggleIndigo} />}
-      {tab === "sites" && <SitesTab sites={sites} onSitesChange={onSitesChange} />}
+      {tab === "clients" && <ClientsTab clients={clients} sites={sites} allEntries={allEntries} onClientsChange={onClientsChange} onRenameClient={onRenameClient} />}
+      {tab === "sites" && <SitesTab sites={sites} clients={clients} onSitesChange={onSitesChange} />}
     </div>
   );
 }
@@ -1453,6 +1454,103 @@ function RatesTab({ allEntries, rates, fittersList, onRatesChange }) {
             {saved ? "✓ Saved!" : "Save All Rates"}
           </button>
         </>
+      )}
+    </div>
+  );
+}
+
+// ---------- CLIENTS TAB ----------
+function ClientsTab({ clients, sites, allEntries, onClientsChange, onRenameClient }) {
+  const [name, setName] = useState("");
+  const [error, setError] = useState("");
+  const [editing, setEditing] = useState(null);
+  const [draft, setDraft] = useState("");
+
+  const list = [...(clients || [])].sort((a, b) => a.localeCompare(b));
+  const siteCount = (c) => (sites || []).filter(s => s.client === c).length;
+  const hasHistory = (c) => (allEntries || []).some(r => (r.entries || []).some(e => e.client === c));
+
+  const add = async () => {
+    const n = name.trim();
+    if (!n) { setError("Enter a client name."); return; }
+    if ((clients || []).some(c => c.toLowerCase() === n.toLowerCase())) { setError("That client is already on the list."); return; }
+    await onClientsChange([...(clients || []), n]);
+    setName(""); setError("");
+  };
+
+  const saveRename = async (oldName) => {
+    const n = draft.trim();
+    if (!n) { setError("Enter a client name."); return; }
+    if (n !== oldName && (clients || []).some(c => c.toLowerCase() === n.toLowerCase())) { setError("That client is already on the list."); return; }
+    if (n !== oldName) await onRenameClient(oldName, n);
+    setEditing(null); setError("");
+  };
+
+  const remove = async (c) => {
+    if (siteCount(c) > 0 || hasHistory(c)) return;
+    await onClientsChange((clients || []).filter(x => x !== c));
+  };
+
+  return (
+    <div>
+      <p style={{ fontFamily: "'DM Mono', monospace", fontSize: 12, color: "#888", marginBottom: 16 }}>
+        Add each company once here. When you add a site you pick the client from this list, so the name and spelling stay the same everywhere — on invoices, timesheets and expenses.
+      </p>
+
+      <div style={{ background: "#f5f2ed", borderRadius: 10, padding: 16, marginBottom: 20 }}>
+        <div style={{ fontFamily: "'DM Mono', monospace", fontSize: 11, color: "#888", textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: 12 }}>Add Client</div>
+        <label style={labelStyle}>Company name</label>
+        <input value={name} onChange={e => { setName(e.target.value); setError(""); }}
+          onKeyDown={e => e.key === "Enter" && add()}
+          placeholder="e.g. Lanserring" style={inputStyle} />
+        {error && !editing && <p style={{ color: "#c0392b", fontFamily: "'DM Mono', monospace", fontSize: 12, margin: "8px 0 0 0" }}>{error}</p>}
+        <button onClick={add} style={{ ...btnStyle, marginTop: 12, padding: "10px 18px" }}>+ Add Client</button>
+      </div>
+
+      {list.length === 0 ? (
+        <p style={{ textAlign: "center", fontFamily: "'DM Mono', monospace", fontSize: 13, color: "#bbb", padding: "24px 0" }}>No clients added yet.</p>
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          {list.map(c => {
+            const sc = siteCount(c);
+            const used = sc > 0 || hasHistory(c);
+            return (
+              <div key={c} style={{ border: "1px solid #e8e4de", borderRadius: 8, padding: "12px 14px", background: "#fff" }}>
+                {editing === c ? (
+                  <div>
+                    <input value={draft} onChange={e => { setDraft(e.target.value); setError(""); }}
+                      onKeyDown={e => e.key === "Enter" && saveRename(c)}
+                      style={{ ...inputStyle, marginBottom: 8 }} />
+                    {error && <p style={{ color: "#c0392b", fontFamily: "'DM Mono', monospace", fontSize: 11, margin: "0 0 8px 0" }}>{error}</p>}
+                    <p style={{ fontFamily: "'DM Mono', monospace", fontSize: 10, color: "#b7860b", margin: "0 0 8px 0" }}>
+                      Renaming updates this client everywhere — sites, submitted hours and expenses.
+                    </p>
+                    <div style={{ display: "flex", gap: 8 }}>
+                      <button onClick={() => saveRename(c)} style={{ ...btnStyle, marginTop: 0, padding: "8px 14px", fontSize: 12 }}>Save</button>
+                      <button onClick={() => { setEditing(null); setError(""); }} style={{ fontFamily: "'DM Mono', monospace", fontSize: 12, background: "none", border: "1px solid #e0dbd4", borderRadius: 8, padding: "8px 14px", cursor: "pointer", color: "#888" }}>Cancel</button>
+                    </div>
+                  </div>
+                ) : (
+                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
+                    <div>
+                      <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 13, color: "#1a1a1a" }}>{c}</span>
+                      <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 10, color: "#aaa", marginLeft: 10 }}>
+                        {sc} site{sc === 1 ? "" : "s"}{hasHistory(c) ? " · has submitted hours" : ""}
+                      </span>
+                    </div>
+                    <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
+                      <button onClick={() => { setEditing(c); setDraft(c); setError(""); }}
+                        style={{ background: "none", border: "1px solid #e0dbd4", borderRadius: 6, padding: "4px 10px", fontFamily: "'DM Mono', monospace", fontSize: 11, color: "#888", cursor: "pointer" }}>Rename</button>
+                      <button onClick={() => remove(c)} disabled={used}
+                        title={used ? "In use — remove its sites first" : "Remove"}
+                        style={{ background: "none", border: "1px solid #eee", borderRadius: 6, padding: "4px 10px", fontFamily: "'DM Mono', monospace", fontSize: 11, color: used ? "#ddd" : "#aaa", cursor: used ? "not-allowed" : "pointer" }}>Remove</button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
       )}
     </div>
   );
@@ -3133,7 +3231,7 @@ function EditSubmission({ record, sites, allEntries, onSave, onCancel }) {
 }
 
 // ---------- SITES TAB ----------
-function SitesTab({ sites, onSitesChange }) {
+function SitesTab({ sites, clients, onSitesChange }) {
   const [siteName, setSiteName] = useState("");
   const [client, setClient] = useState("");
   const [otMult, setOtMult] = useState("1.5");
@@ -3143,7 +3241,7 @@ function SitesTab({ sites, onSitesChange }) {
   const [error, setError] = useState("");
   const addSite = async () => {
     if (!siteName.trim()) { setError("Enter a site name."); return; }
-    if (!client.trim()) { setError("Enter a client name."); return; }
+    if (!client) { setError("Pick a client. Add new ones in the Clients tab."); return; }
     const m = parseFloat(otMult);
     if (isNaN(m) || m < 1) { setError("Overtime multiplier must be 1 or higher (e.g. 1.25 or 1.5)."); return; }
     const p = parseFloat(jobPrice);
@@ -3161,7 +3259,13 @@ function SitesTab({ sites, onSitesChange }) {
         <div style={{ fontFamily: "'DM Mono', monospace", fontSize: 11, color: "#888", textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: 12 }}>Add Site</div>
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 10 }}>
           <div><label style={labelStyle}>Site Name</label><input value={siteName} onChange={e => { setSiteName(e.target.value); setError(""); }} placeholder="e.g. Chelsea Barracks" style={inputStyle} /></div>
-          <div><label style={labelStyle}>Client</label><input value={client} onChange={e => { setClient(e.target.value); setError(""); }} placeholder="e.g. Lanserring" style={inputStyle} /></div>
+          <div>
+            <label style={labelStyle}>Client</label>
+            <select value={client} onChange={e => { setClient(e.target.value); setError(""); }} style={selectStyle}>
+              <option value="">— Select client —</option>
+              {[...(clients || [])].sort((a, b) => a.localeCompare(b)).map(c => <option key={c} value={c}>{c}</option>)}
+            </select>
+          </div>
         </div>
         <div style={{ marginBottom: 10 }}>
           <label style={labelStyle}>How is this job priced?</label>
@@ -3208,6 +3312,7 @@ function SitesTab({ sites, onSitesChange }) {
             </div>
           </div>
         )}
+        {(clients || []).length === 0 && <p style={{ fontFamily: "'DM Mono', monospace", fontSize: 11, color: "#b7860b", marginBottom: 8 }}>Add a client in the Clients tab first.</p>}
         {error && <p style={{ color: "#c0392b", fontFamily: "'DM Mono', monospace", fontSize: 12, marginBottom: 8 }}>{error}</p>}
         <button onClick={addSite} style={{ ...btnStyle, marginTop: 4, padding: "10px 18px" }}>+ Add Site</button>
       </div>
@@ -3252,6 +3357,7 @@ export default function App() {
   const [companyExpenses, setCompanyExpenses] = useState([]); // Tom's own costs per client (hotels, flights...)
   const [excludedExpenses, setExcludedExpenses] = useState({}); // expenses Tom won't pass on: { expKey: true }
   const [fitterDetails, setFitterDetails] = useState({}); // each fitter's own address for their pay statement
+  const [clients, setClients] = useState([]); // the master client list, so spellings stay consistent
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -3259,8 +3365,8 @@ export default function App() {
     Promise.all([
       loadStr("finefit_fitter_name"),
       load("finefit_sites"), load("finefit_rates"),
-      load("finefit_locked_weeks"), load("finefit_fitters"), load("finefit_pins"), load("finefit_no_indigo"), load("finefit_billed_jobs"), load("finefit_extra_days"), load("finefit_company_expenses"), load("finefit_excluded_expenses"), load("finefit_fitter_details"),
-    ]).then(([name, savedSites, savedRates, savedLocks, savedFitters, savedPins, savedNoIndigo, savedBilled, savedExtra, savedCoExp, savedExcl, savedDetails]) => {
+      load("finefit_locked_weeks"), load("finefit_fitters"), load("finefit_pins"), load("finefit_no_indigo"), load("finefit_billed_jobs"), load("finefit_extra_days"), load("finefit_company_expenses"), load("finefit_excluded_expenses"), load("finefit_fitter_details"), load("finefit_clients"),
+    ]).then(([name, savedSites, savedRates, savedLocks, savedFitters, savedPins, savedNoIndigo, savedBilled, savedExtra, savedCoExp, savedExcl, savedDetails, savedClients]) => {
       if (name) setFitterName(name);
       setSites(savedSites || []);
       setRates(savedRates || {});
@@ -3273,6 +3379,12 @@ export default function App() {
       setCompanyExpenses(savedCoExp || []);
       setExcludedExpenses(savedExcl || {});
       setFitterDetails(savedDetails || {});
+      // Seed the client list from existing sites the first time, so nothing is lost
+      const seeded = (savedClients && savedClients.length)
+        ? savedClients
+        : [...new Set((savedSites || []).map(s => s.client).filter(Boolean))].sort();
+      setClients(seeded);
+      if (!(savedClients && savedClients.length) && seeded.length) save("finefit_clients", seeded);
       setLoading(false);
     });
   }, []);
@@ -3311,6 +3423,22 @@ export default function App() {
   const handleSetPin = async (name, hash) => { const u = { ...pins, [name]: hash }; setPins(u); await save("finefit_pins", u); };
   const handleResetPin = async (name) => { const u = { ...pins }; delete u[name]; setPins(u); await save("finefit_pins", u); };
   const handleCompanyExpensesChange = async (u) => { setCompanyExpenses(u); await save("finefit_company_expenses", u); };
+  const handleClientsChange = async (u) => { setClients(u); await save("finefit_clients", u); };
+  // Renaming a client updates every site and every submitted entry so nothing splits in two.
+  const handleRenameClient = async (oldName, newName) => {
+    const nextClients = clients.map(c => c === oldName ? newName : c);
+    const nextSites = (sites || []).map(s => s.client === oldName ? { ...s, client: newName } : s);
+    setClients(nextClients); setSites(nextSites);
+    await save("finefit_clients", nextClients);
+    await save("finefit_sites", nextSites);
+    const touched = (allEntries || []).filter(r => (r.entries || []).some(e => e.client === oldName));
+    for (const r of touched) {
+      const updated = { ...r, entries: r.entries.map(e => e.client === oldName ? { ...e, client: newName } : e) };
+      await saveEntry(updated);
+    }
+    const nextCo = (companyExpenses || []).map(e => e.client === oldName ? { ...e, client: newName } : e);
+    if (nextCo.some((e, i) => e !== companyExpenses[i])) { setCompanyExpenses(nextCo); await save("finefit_company_expenses", nextCo); }
+  };
   const handleSaveFitterDetails = async (name, details) => {
     const u = { ...fitterDetails, [name]: details };
     setFitterDetails(u); await save("finefit_fitter_details", u);
@@ -3356,7 +3484,7 @@ export default function App() {
             <AdminLogin onLogin={() => setView("admin")} />
           ) : (
             <AdminDashboard allEntries={allEntries} sites={sites} rates={rates}
-              lockedWeeks={lockedWeeks} fittersList={fittersList} pins={pins} noIndigo={noIndigo} billedJobs={billedJobs} onToggleBilledJob={handleToggleBilledJob} extraDays={extraDays} onSetExtraDay={handleSetExtraDay} companyExpenses={companyExpenses} onCompanyExpensesChange={handleCompanyExpensesChange} excludedExpenses={excludedExpenses} onToggleExcludedExpense={handleToggleExcludedExpense} onSitesChange={handleSitesChange}
+              lockedWeeks={lockedWeeks} fittersList={fittersList} pins={pins} noIndigo={noIndigo} billedJobs={billedJobs} onToggleBilledJob={handleToggleBilledJob} extraDays={extraDays} onSetExtraDay={handleSetExtraDay} companyExpenses={companyExpenses} onCompanyExpensesChange={handleCompanyExpensesChange} clients={clients} onClientsChange={handleClientsChange} onRenameClient={handleRenameClient} excludedExpenses={excludedExpenses} onToggleExcludedExpense={handleToggleExcludedExpense} onSitesChange={handleSitesChange}
               onRatesChange={handleRatesChange} onDeleteRecord={handleDeleteRecord} onFittersChange={handleFittersChange} onResetPin={handleResetPin} onToggleIndigo={handleToggleIndigo}
               onUpdateRecord={handleUpdateRecord} onToggleLock={handleToggleLock} onLogout={() => setView("fitter")} />
           )}
