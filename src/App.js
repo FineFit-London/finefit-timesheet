@@ -2849,7 +2849,8 @@ function InvoicesTab({ allEntries, rates, sites, lockedWeeks, noIndigo, billedJo
 
 // ---------- SUBMISSIONS TAB ----------
 function SubmissionsTab({ allEntries, sites, lockedWeeks, fittersList, onDeleteRecord, onUpdateRecord }) {
-  const [filterWeek, setFilterWeek] = useState("all");
+  // Default to the fortnight in progress — older ones are still there in the dropdown.
+  const [filterWeek, setFilterWeek] = useState(getWeekKey());
   const [filterFitter, setFilterFitter] = useState("all");
   const [filterClient, setFilterClient] = useState("all");
   const [editingId, setEditingId] = useState(null);
@@ -2917,7 +2918,12 @@ function SubmissionsTab({ allEntries, sites, lockedWeeks, fittersList, onDeleteR
       <p style={{ fontFamily: "'DM Mono', monospace", fontSize: 11, color: "#888", marginBottom: 16 }}>{filtered.length} submission{filtered.length !== 1 ? "s" : ""} · {totalHours.toFixed(1)} hrs</p>
 
       {filtered.length === 0 ? (
-        <div style={{ textAlign: "center", padding: "40px 0", color: "#bbb", fontFamily: "'DM Mono', monospace", fontSize: 13 }}>No submissions match these filters.</div>
+        <div style={{ textAlign: "center", padding: "36px 12px", color: "#bbb", fontFamily: "'DM Mono', monospace", fontSize: 13 }}>
+          {filterWeek === getWeekKey() && filterFitter === "all" && filterClient === "all"
+            ? "Nothing submitted yet for this fortnight."
+            : "No submissions match these filters."}
+          <div style={{ fontSize: 11, color: "#ccc", marginTop: 6 }}>Use the fortnight dropdown above to look at an earlier period.</div>
+        </div>
       ) : (() => {
         // Group filtered submissions by fitter + fortnight so multiple submissions show as one tidy card
         const groups = {};
