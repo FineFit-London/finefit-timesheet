@@ -123,13 +123,22 @@ function openReceipt(r) {
 // the usual overtime rules (no weekend/8.5hr uplift on top).
 const WORK_AWAY_MULT = 1.25;
 
+// Most jobs go to overtime after 8.5 hrs in a day, but a site can set its own
+// threshold (Peninsula, for example, only pays overtime after 10).
+const DEFAULT_OT_THRESHOLD = 8.5;
+function otThresholdOf(site) {
+  const t = parseFloat(site?.otThreshold);
+  return (!isNaN(t) && t > 0) ? t : DEFAULT_OT_THRESHOLD;
+}
+
 // Split a day's hours into normal and uplifted. On a work-away site every hour
-// is uplifted; otherwise weekends, bank holidays and hours over 8.5 are.
-function splitOvertime(day, hours, dateIso, workAway) {
+// is uplifted; otherwise weekends, bank holidays and hours over the site's threshold are.
+function splitOvertime(day, hours, dateIso, workAway, threshold) {
   const h = Number(hours) || 0;
   if (workAway) return { normal: 0, overtime: h };
   if (day === "Saturday" || day === "Sunday" || isBankHoliday(dateIso)) return { normal: 0, overtime: h };
-  const normal = Math.min(h, 8.5);
+  const t = (!isNaN(parseFloat(threshold)) && parseFloat(threshold) > 0) ? parseFloat(threshold) : DEFAULT_OT_THRESHOLD;
+  const normal = Math.min(h, t);
   return { normal, overtime: Math.max(0, h - normal) };
 }
 
@@ -529,7 +538,7 @@ function FitterForm({ fitterName, onLogout, onSubmit, sites, allEntries, lockedW
 
     const builtEntries = entries.map(e => {
       const h = parseFloat(e.hours);
-      const ot = splitOvertime(e.day, h, e.date, site(e.siteId)?.workAway);
+      const ot = splitOvertime(e.day, h, e.date, site(e.siteId)?.workAway, otThresholdOf(site(e.siteId)));
       return {
         date: e.date,
         day: e.day,
@@ -580,7 +589,7 @@ function FitterForm({ fitterName, onLogout, onSubmit, sites, allEntries, lockedW
         if (s?.workAway) {
           warnings.push(`${ne.day}: work away job — all ${ne.overtimeHours} hr(s) paid at 1.25×.`);
         } else {
-          const why = isBankHoliday(ne.date) ? "bank holiday" : (ne.day === "Saturday" || ne.day === "Sunday") ? "weekend" : "over 8.5 hrs";
+          const why = isBankHoliday(ne.date) ? "bank holiday" : (ne.day === "Saturday" || ne.day === "Sunday") ? "weekend" : `over ${otThresholdOf(s)} hrs`;
           warnings.push(`${ne.day}: ${ne.overtimeHours} hr(s) counted as overtime (${why}).`);
         }
       }
@@ -975,7 +984,7 @@ function MyPaySummary({ fitterName, allEntries, sites, rates, noIndigo, fitterDe
   const bySite = {};
   mine.forEach(en => {
     let nh = en.normalHours, oh = en.overtimeHours;
-    if (nh === undefined || oh === undefined) { const s = splitOvertime(en.day, en.hours || 0, en.date, (sites || []).find(x => x.name === en.siteName)?.workAway); nh = s.normal; oh = s.overtime; }
+    if (nh === undefined || oh === undefined) { const _st = (sites || []).find(x => x.name === en.siteName); const s = splitOvertime(en.day, en.hours || 0, en.date, _st?.workAway, otThresholdOf(_st)); nh = s.normal; oh = s.overtime; }
     if (!bySite[en.siteName]) bySite[en.siteName] = { site: en.siteName, normalHours: 0, overtimeHours: 0 };
     bySite[en.siteName].normalHours += (nh || 0);
     bySite[en.siteName].overtimeHours += (oh || 0);
@@ -1261,7 +1270,7 @@ function AdminLogin({ onLogin }) {
 }
 
 // ---------- ADMIN DASHBOARD ----------
-function AdminDashboard({ allEntries, sites, rates, lockedWeeks, fittersList, pins, noIndigo, billedJobs, onToggleBilledJob, extraDays, onSetExtraDay, companyExpenses, onCompanyExpensesChange, clients, onClientsChange, onRenameClient, excludedExpenses, onToggleExcludedExpense, onSitesChange, onRatesChange, onDeleteRecord, onUpdateRecord, onToggleLock, onFittersChange, onResetPin, onToggleIndigo, onLogout }) {
+function AdminDashboard({ allEntries, sites, rates, lockedWeeks, fittersList, pins, noIndigo, billedJobs, onToggleBilledJob, extraDays, onSetExtraDay, companyExpenses, onCompanyExpensesChange, clients, onClientsChange, onRenameClient, onUpdateSite, excludedExpenses, onToggleExcludedExpense, onSitesChange, onRatesChange, onDeleteRecord, onUpdateRecord, onToggleLock, onFittersChange, onResetPin, onToggleIndigo, onLogout }) {
   const [tab, setTab] = useState("submissions");
   return (
     <div>
@@ -1286,7 +1295,7 @@ function AdminDashboard({ allEntries, sites, rates, lockedWeeks, fittersList, pi
       {tab === "rates" && <RatesTab allEntries={allEntries} rates={rates} fittersList={fittersList} onRatesChange={onRatesChange} />}
       {tab === "fitters" && <FittersTab fittersList={fittersList} allEntries={allEntries} pins={pins} noIndigo={noIndigo} onFittersChange={onFittersChange} onResetPin={onResetPin} onToggleIndigo={onToggleIndigo} />}
       {tab === "clients" && <ClientsTab clients={clients} sites={sites} allEntries={allEntries} onClientsChange={onClientsChange} onRenameClient={onRenameClient} />}
-      {tab === "sites" && <SitesTab sites={sites} clients={clients} onSitesChange={onSitesChange} />}
+      {tab === "sites" && <SitesTab sites={sites} clients={clients} onSitesChange={onSitesChange} onUpdateSite={onUpdateSite} />}
     </div>
   );
 }
@@ -1771,7 +1780,7 @@ function EarningsTab({ allEntries, rates, sites, noIndigo, billedJobs, extraDays
     const period = record.weekKey;
     record.entries.forEach(en => {
       let nh = en.normalHours, oh = en.overtimeHours;
-      if (nh === undefined || oh === undefined) { const s = splitOvertime(en.day, en.hours || 0, en.date, (sites || []).find(x => x.name === en.siteName)?.workAway); nh = s.normal; oh = s.overtime; }
+      if (nh === undefined || oh === undefined) { const _st = (sites || []).find(x => x.name === en.siteName); const s = splitOvertime(en.day, en.hours || 0, en.date, _st?.workAway, otThresholdOf(_st)); nh = s.normal; oh = s.overtime; }
       const fixed = isFixedSite(en.siteName);
       const dayKey = `${record.id}::${en.date}::${en.siteId}`;
       const extraHrs = fixed ? extraHoursFor(extraDays, dayKey, en.hours) : 0;
@@ -1931,7 +1940,7 @@ function InvoicesTab({ allEntries, rates, sites, lockedWeeks, noIndigo, billedJo
       // Use stored split if present, else derive from day (back-compat with old entries)
       let nh = en.normalHours, oh = en.overtimeHours;
       if (nh === undefined || oh === undefined) {
-        const s = splitOvertime(en.day, en.hours || 0, en.date, (sites || []).find(x => x.name === en.siteName)?.workAway); nh = s.normal; oh = s.overtime;
+        const _st = (sites || []).find(x => x.name === en.siteName); const s = splitOvertime(en.day, en.hours || 0, en.date, _st?.workAway, otThresholdOf(_st)); nh = s.normal; oh = s.overtime;
       }
       fitterSiteTotals[key].normalHours += (nh || 0);
       fitterSiteTotals[key].overtimeHours += (oh || 0);
@@ -1986,7 +1995,7 @@ function InvoicesTab({ allEntries, rates, sites, lockedWeeks, noIndigo, billedJo
       const chargeable = extraHoursFor(extraDays, dayKeyOf(record.id, en), en.hours);
       if (chargeable <= 0) return;                        // only hours Tom has marked chargeable
       let nh = en.normalHours, oh = en.overtimeHours;
-      if (nh === undefined || oh === undefined) { const s = splitOvertime(en.day, en.hours || 0, en.date, (sites || []).find(x => x.name === en.siteName)?.workAway); nh = s.normal; oh = s.overtime; }
+      if (nh === undefined || oh === undefined) { const _st = (sites || []).find(x => x.name === en.siteName); const s = splitOvertime(en.day, en.hours || 0, en.date, _st?.workAway, otThresholdOf(_st)); nh = s.normal; oh = s.overtime; }
       // Charge only the hours marked as extra, filling the normal portion first
       const part = splitExtra(chargeable, nh, oh);
       const cr = clientRateOf(rates, record.fitter);
@@ -3100,7 +3109,7 @@ function EditSubmission({ record, sites, allEntries, onSave, onCancel }) {
       entries: entries.map(e => {
         const s = site(e.siteId);
         const h = parseFloat(e.hours);
-        const ot = splitOvertime(e.day, h, e.date, site(e.siteId)?.workAway);
+        const ot = splitOvertime(e.day, h, e.date, site(e.siteId)?.workAway, otThresholdOf(site(e.siteId)));
         // include any un-added draft
         const areas = [...(e.areas || [])];
         if ((e.areaDraft || "").trim() && !areas.some(a => a.toLowerCase() === e.areaDraft.trim().toLowerCase())) areas.push(e.areaDraft.trim());
@@ -3237,10 +3246,14 @@ function EditSubmission({ record, sites, allEntries, onSave, onCancel }) {
 }
 
 // ---------- SITES TAB ----------
-function SitesTab({ sites, clients, onSitesChange }) {
+function SitesTab({ sites, clients, onSitesChange, onUpdateSite }) {
+  const [editId, setEditId] = useState(null);
+  const [ed, setEd] = useState({});
+  const [editErr, setEditErr] = useState("");
   const [siteName, setSiteName] = useState("");
   const [client, setClient] = useState("");
   const [otMult, setOtMult] = useState("1.5");
+  const [otThreshold, setOtThreshold] = useState("8.5");
   const [pricing, setPricing] = useState("hourly");
   const [workAway, setWorkAway] = useState(false);
   const [jobPrice, setJobPrice] = useState("");
@@ -3254,9 +3267,9 @@ function SitesTab({ sites, clients, onSitesChange }) {
     if (pricing === "fixed" && (isNaN(p) || p <= 0)) { setError("Enter the fixed price for this job."); return; }
     await onSitesChange([...sites, {
       id: Date.now().toString(), name: siteName.trim(), client: client.trim(), otMultiplier: m,
-      pricing, jobPrice: pricing === "fixed" ? p : null, workAway,
+      pricing, jobPrice: pricing === "fixed" ? p : null, workAway, otThreshold: parseFloat(otThreshold) || DEFAULT_OT_THRESHOLD,
     }]);
-    setSiteName(""); setClient(""); setOtMult("1.5"); setPricing("hourly"); setJobPrice(""); setWorkAway(false); setError("");
+    setSiteName(""); setClient(""); setOtMult("1.5"); setOtThreshold("8.5"); setPricing("hourly"); setJobPrice(""); setWorkAway(false); setError("");
   };
   return (
     <div>
@@ -3314,7 +3327,14 @@ function SitesTab({ sites, clients, onSitesChange }) {
                 <option value="1">None (1&times;)</option>
                 <option value="2">2&times;</option>
               </select>
-              <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 11, color: "#aaa" }}>applied to weekend hours &amp; anything over 8.5 hrs/day</span>
+              <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 11, color: "#aaa" }}>applied to weekend hours &amp; long days</span>
+            </div>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 8 }}>
+              <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 11, color: "#888" }}>Overtime after</span>
+              <input value={otThreshold} onChange={e => { setOtThreshold(e.target.value); setError(""); }}
+                type="number" min="1" max="24" step="0.5"
+                style={{ ...inputStyle, width: 70, marginBottom: 0, textAlign: "right", fontSize: 12 }} />
+              <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 11, color: "#aaa" }}>hrs a day on this job (usually 8.5)</span>
             </div>
           </div>
         )}
@@ -3326,21 +3346,105 @@ function SitesTab({ sites, clients, onSitesChange }) {
         <p style={{ textAlign: "center", fontFamily: "'DM Mono', monospace", fontSize: 13, color: "#bbb", padding: "24px 0" }}>No sites added yet.</p>
       ) : (
         <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-          {sites.map(s => (
-            <div key={s.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "12px 14px", border: "1px solid #e8e4de", borderRadius: 8, background: "#fff" }}>
-              <div>
-                <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 13, color: "#1a1a1a" }}>{s.name}</span>
-                <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 11, color: "#C8A96E", marginLeft: 10 }}>→ {s.client}</span>
-                {s.workAway
-                  ? <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 11, color: "#8a5a2b", marginLeft: 10 }}>Work away 1.25&times;</span>
-                  : <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 11, color: "#888", marginLeft: 10 }}>OT {s.otMultiplier ?? 1.5}&times;</span>}
-                {s.pricing === "fixed"
-                  ? <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 10, color: "#1a6f4b", background: "#eaf6f0", borderRadius: 5, padding: "2px 7px", marginLeft: 10 }}>Fixed {toGBP(s.jobPrice || 0)}</span>
-                  : <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 10, color: "#888", background: "#f2efeb", borderRadius: 5, padding: "2px 7px", marginLeft: 10 }}>Hourly</span>}
+          {sites.map(s => {
+            const isEd = editId === s.id;
+            const set = (k, v) => setEd(p => ({ ...p, [k]: v }));
+            const saveEdit = async () => {
+              if (!(ed.name || "").trim()) { setEditErr("Enter a site name."); return; }
+              if (!ed.client) { setEditErr("Pick a client."); return; }
+              const m = parseFloat(ed.otMultiplier);
+              if (isNaN(m) || m < 1) { setEditErr("Overtime multiplier must be 1 or higher."); return; }
+              const th = parseFloat(ed.otThreshold);
+              if (isNaN(th) || th <= 0 || th > 24) { setEditErr("Overtime threshold must be between 1 and 24 hours."); return; }
+              const jp = parseFloat(ed.jobPrice);
+              if (ed.pricing === "fixed" && (isNaN(jp) || jp <= 0)) { setEditErr("Enter the fixed price for this job."); return; }
+              await onUpdateSite({ ...s, name: ed.name.trim(), client: ed.client, otMultiplier: m,
+                otThreshold: th, workAway: !!ed.workAway, pricing: ed.pricing,
+                jobPrice: ed.pricing === "fixed" ? jp : null });
+              setEditId(null); setEditErr("");
+            };
+            if (isEd) {
+              return (
+                <div key={s.id} style={{ border: "1px solid #C8A96E", borderRadius: 8, background: "#faf6ef", padding: 14 }}>
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 10 }}>
+                    <div>
+                      <label style={labelStyle}>Site name</label>
+                      <input value={ed.name || ""} onChange={e => { set("name", e.target.value); setEditErr(""); }} style={inputStyle} />
+                    </div>
+                    <div>
+                      <label style={labelStyle}>Client</label>
+                      <select value={ed.client || ""} onChange={e => { set("client", e.target.value); setEditErr(""); }} style={selectStyle}>
+                        <option value="">— Select client —</option>
+                        {[...(clients || [])].sort((a, b) => a.localeCompare(b)).map(c => <option key={c} value={c}>{c}</option>)}
+                      </select>
+                    </div>
+                  </div>
+                  <div style={{ marginBottom: 10 }}>
+                    <label style={labelStyle}>How is this job priced?</label>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                      <select value={ed.pricing || "hourly"} onChange={e => { set("pricing", e.target.value); setEditErr(""); }} style={{ ...selectStyle, width: 170 }}>
+                        <option value="hourly">Hourly (charge per hour)</option>
+                        <option value="fixed">Fixed price for the job</option>
+                      </select>
+                      {ed.pricing === "fixed" && (
+                        <div style={{ position: "relative" }}>
+                          <span style={{ position: "absolute", left: 9, top: "50%", transform: "translateY(-50%)", fontFamily: "'DM Mono', monospace", fontSize: 12, color: "#aaa" }}>£</span>
+                          <input value={ed.jobPrice ?? ""} onChange={e => { set("jobPrice", e.target.value); setEditErr(""); }} type="number" min="0" step="50"
+                            style={{ ...inputStyle, width: 140, paddingLeft: 22, marginBottom: 0 }} />
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                  <label style={{ display: "flex", alignItems: "center", gap: 9, cursor: "pointer", marginBottom: 10 }}>
+                    <input type="checkbox" checked={!!ed.workAway} onChange={e => set("workAway", e.target.checked)}
+                      style={{ width: 17, height: 17, accentColor: "#1a1a1a", cursor: "pointer" }} />
+                    <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 12, color: "#1a1a1a" }}>Work away job (every hour 1.25×)</span>
+                  </label>
+                  {!ed.workAway && (
+                    <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginBottom: 10 }}>
+                      <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 11, color: "#888" }}>Overtime</span>
+                      <select value={String(ed.otMultiplier ?? 1.5)} onChange={e => set("otMultiplier", e.target.value)} style={{ ...selectStyle, width: 110 }}>
+                        <option value="1.25">1.25×</option><option value="1.5">1.5×</option>
+                        <option value="1">None (1×)</option><option value="2">2×</option>
+                      </select>
+                      <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 11, color: "#888" }}>after</span>
+                      <input value={ed.otThreshold ?? 8.5} onChange={e => { set("otThreshold", e.target.value); setEditErr(""); }}
+                        type="number" min="1" max="24" step="0.5"
+                        style={{ ...inputStyle, width: 70, marginBottom: 0, textAlign: "right", fontSize: 12 }} />
+                      <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 11, color: "#aaa" }}>hrs a day</span>
+                    </div>
+                  )}
+                  {editErr && <p style={{ color: "#c0392b", fontFamily: "'DM Mono', monospace", fontSize: 12, margin: "0 0 8px 0" }}>{editErr}</p>}
+                  <p style={{ fontFamily: "'DM Mono', monospace", fontSize: 10, color: "#b7860b", margin: "0 0 10px 0" }}>
+                    Rate changes apply from now on. Renaming the site or changing its client also updates hours already submitted for it.
+                  </p>
+                  <div style={{ display: "flex", gap: 8 }}>
+                    <button onClick={saveEdit} style={{ ...btnStyle, marginTop: 0, padding: "9px 16px", fontSize: 12 }}>Save changes</button>
+                    <button onClick={() => { setEditId(null); setEditErr(""); }} style={{ fontFamily: "'DM Mono', monospace", fontSize: 12, background: "none", border: "1px solid #e0dbd4", borderRadius: 8, padding: "9px 14px", cursor: "pointer", color: "#888" }}>Cancel</button>
+                  </div>
+                </div>
+              );
+            }
+            return (
+              <div key={s.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "12px 14px", border: "1px solid #e8e4de", borderRadius: 8, background: "#fff" }}>
+                <div>
+                  <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 13, color: "#1a1a1a" }}>{s.name}</span>
+                  <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 11, color: "#C8A96E", marginLeft: 10 }}>→ {s.client}</span>
+                  {s.workAway
+                    ? <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 11, color: "#8a5a2b", marginLeft: 10 }}>Work away 1.25×</span>
+                    : <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 11, color: "#888", marginLeft: 10 }}>OT {s.otMultiplier ?? 1.5}× after {otThresholdOf(s)}h</span>}
+                  {s.pricing === "fixed"
+                    ? <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 10, color: "#1a6f4b", background: "#eaf6f0", borderRadius: 5, padding: "2px 7px", marginLeft: 10 }}>Fixed {toGBP(s.jobPrice || 0)}</span>
+                    : <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 10, color: "#888", background: "#f2efeb", borderRadius: 5, padding: "2px 7px", marginLeft: 10 }}>Hourly</span>}
+                </div>
+                <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
+                  <button onClick={() => { setEditId(s.id); setEditErr(""); setEd({ name: s.name, client: s.client, pricing: s.pricing || "hourly", jobPrice: s.jobPrice ?? "", workAway: !!s.workAway, otMultiplier: s.otMultiplier ?? 1.5, otThreshold: otThresholdOf(s) }); }}
+                    style={{ background: "none", border: "1px solid #e0dbd4", borderRadius: 6, padding: "4px 10px", fontFamily: "'DM Mono', monospace", fontSize: 11, color: "#888", cursor: "pointer" }}>Edit</button>
+                  <button onClick={() => onSitesChange(sites.filter(x => x.id !== s.id))} style={{ background: "none", border: "1px solid #eee", borderRadius: 6, padding: "4px 10px", fontFamily: "'DM Mono', monospace", fontSize: 11, color: "#aaa", cursor: "pointer" }}>Remove</button>
+                </div>
               </div>
-              <button onClick={() => onSitesChange(sites.filter(x => x.id !== s.id))} style={{ background: "none", border: "1px solid #eee", borderRadius: 6, padding: "4px 10px", fontFamily: "'DM Mono', monospace", fontSize: 11, color: "#aaa", cursor: "pointer" }}>Remove</button>
-            </div>
-          ))}
+            );
+          })}
         </div>
       )}
     </div>
@@ -3429,6 +3533,21 @@ export default function App() {
   const handleSetPin = async (name, hash) => { const u = { ...pins, [name]: hash }; setPins(u); await save("finefit_pins", u); };
   const handleResetPin = async (name) => { const u = { ...pins }; delete u[name]; setPins(u); await save("finefit_pins", u); };
   const handleCompanyExpensesChange = async (u) => { setCompanyExpenses(u); await save("finefit_company_expenses", u); };
+  // Editing a site also refreshes the site/client name stored on submitted hours,
+  // so past timesheets and invoices don't split under two different names.
+  const handleUpdateSite = async (updatedSite) => {
+    const nextSites = (sites || []).map(s => s.id === updatedSite.id ? updatedSite : s);
+    setSites(nextSites);
+    await save("finefit_sites", nextSites);
+    const touched = (allEntries || []).filter(r =>
+      (r.entries || []).some(e => e.siteId === updatedSite.id &&
+        (e.siteName !== updatedSite.name || e.client !== updatedSite.client)));
+    for (const r of touched) {
+      const updated = { ...r, entries: r.entries.map(e =>
+        e.siteId === updatedSite.id ? { ...e, siteName: updatedSite.name, client: updatedSite.client } : e) };
+      await saveEntry(updated);
+    }
+  };
   const handleClientsChange = async (u) => { setClients(u); await save("finefit_clients", u); };
   // Renaming a client updates every site and every submitted entry so nothing splits in two.
   const handleRenameClient = async (oldName, newName) => {
@@ -3490,7 +3609,7 @@ export default function App() {
             <AdminLogin onLogin={() => setView("admin")} />
           ) : (
             <AdminDashboard allEntries={allEntries} sites={sites} rates={rates}
-              lockedWeeks={lockedWeeks} fittersList={fittersList} pins={pins} noIndigo={noIndigo} billedJobs={billedJobs} onToggleBilledJob={handleToggleBilledJob} extraDays={extraDays} onSetExtraDay={handleSetExtraDay} companyExpenses={companyExpenses} onCompanyExpensesChange={handleCompanyExpensesChange} clients={clients} onClientsChange={handleClientsChange} onRenameClient={handleRenameClient} excludedExpenses={excludedExpenses} onToggleExcludedExpense={handleToggleExcludedExpense} onSitesChange={handleSitesChange}
+              lockedWeeks={lockedWeeks} fittersList={fittersList} pins={pins} noIndigo={noIndigo} billedJobs={billedJobs} onToggleBilledJob={handleToggleBilledJob} extraDays={extraDays} onSetExtraDay={handleSetExtraDay} companyExpenses={companyExpenses} onCompanyExpensesChange={handleCompanyExpensesChange} clients={clients} onClientsChange={handleClientsChange} onUpdateSite={handleUpdateSite} onRenameClient={handleRenameClient} excludedExpenses={excludedExpenses} onToggleExcludedExpense={handleToggleExcludedExpense} onSitesChange={handleSitesChange}
               onRatesChange={handleRatesChange} onDeleteRecord={handleDeleteRecord} onFittersChange={handleFittersChange} onResetPin={handleResetPin} onToggleIndigo={handleToggleIndigo}
               onUpdateRecord={handleUpdateRecord} onToggleLock={handleToggleLock} onLogout={() => setView("fitter")} />
           )}
