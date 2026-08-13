@@ -417,7 +417,11 @@ function FitterForm({ fitterName, onLogout, onSubmit, sites, allEntries, lockedW
   // Auto-save draft whenever entries change (skip once submitted)
   useEffect(() => {
     if (submitted) return;
-    try { localStorage.setItem(draftKey, JSON.stringify(entries)); } catch {}
+    const worthKeeping = entries.some(e => e.siteId || e.hours || (e.areas || []).length || (e.expenses || []).length);
+    try {
+      if (worthKeeping) localStorage.setItem(draftKey, JSON.stringify(entries));
+      else localStorage.removeItem(draftKey); // an empty form should never be restored
+    } catch {}
   }, [entries, submitted, draftKey]);
 
   const clearDraft = () => { try { localStorage.removeItem(draftKey); } catch {} };
@@ -503,7 +507,25 @@ function FitterForm({ fitterName, onLogout, onSubmit, sites, allEntries, lockedW
       || periodDays[0];
     setEntries([...entries, emptyEntry(next)]);
   };
-  const removeEntry = (i) => setEntries(entries.filter((_, idx) => idx !== i));
+  const removeEntry = (i) => {
+    const left = entries.filter((_, idx) => idx !== i);
+    if (left.length === 0) {
+      // Nothing left: reset to a fresh blank day and clear the saved draft,
+      // otherwise the deleted entry reappears next time the app is opened.
+      clearDraft();
+      setRestoredDraft(false);
+      setEntries([emptyEntry()]);
+      return;
+    }
+    setEntries(left);
+  };
+  // Start again: clears everything typed so far, including the saved draft
+  const discardDraft = () => {
+    clearDraft();
+    setRestoredDraft(false);
+    setEntries([emptyEntry()]);
+    setError("");
+  };
 
   // Hours already submitted by this fitter this week (for running total)
   const thisWeekKey = getWeekKey();
@@ -752,9 +774,15 @@ function FitterForm({ fitterName, onLogout, onSubmit, sites, allEntries, lockedW
 
       {/* Unsaved hours nudge */}
       {restoredDraft && (
-        <div style={{ background: "#fff8e8", border: "1px solid #f39c12", borderRadius: 10, padding: "10px 14px", marginBottom: 16, display: "flex", alignItems: "center", gap: 8 }}>
+        <div style={{ background: "#fff8e8", border: "1px solid #f39c12", borderRadius: 10, padding: "10px 14px", marginBottom: 16, display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
           <span style={{ fontSize: 16 }}>📝</span>
-          <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 12, color: "#8a6d3b" }}>You have hours here you haven't submitted yet — don't forget to hit Review &amp; Submit when you're done.</span>
+          <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 12, color: "#8a6d3b", flex: 1, minWidth: 180 }}>
+            These hours haven&apos;t been submitted yet — hit Review &amp; Submit when you&apos;re done, or clear them if you don&apos;t need them.
+          </span>
+          <button onClick={discardDraft}
+            style={{ fontFamily: "'DM Mono', monospace", fontSize: 11, background: "none", border: "1px solid #d8b46a", borderRadius: 6, padding: "6px 12px", cursor: "pointer", color: "#8a6d3b", whiteSpace: "nowrap" }}>
+            Clear &amp; start again
+          </button>
         </div>
       )}
 
