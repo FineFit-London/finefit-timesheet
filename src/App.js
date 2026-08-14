@@ -212,11 +212,56 @@ async function loadStr(key) {
     return snap.exists() ? (snap.data()[key] || null) : null;
   } catch { return null; }
 }
+// Firestore rejects any single document over 1MB. Receipts are stored inside the
+// submission, so a day with two photos can blow the limit even when each photo
+// passed its own check. These helpers keep a whole submission under the limit.
+const FIRESTORE_DOC_LIMIT = 1024 * 1024;
+const SAFE_DOC_BYTES = 900 * 1024; // leave headroom for the rest of the record
+
+function approxBytes(obj) {
+  try { return new Blob([JSON.stringify(obj)]).size; }
+  catch { return JSON.stringify(obj).length; }
+}
+
+// Shrink a photo in the browser so several receipts can live in one submission.
+// PDFs can't be resized this way, so they're returned untouched.
+function compressImage(file, maxDim = 1400, quality = 0.6) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error("read failed"));
+    reader.onload = () => {
+      const img = new Image();
+      img.onerror = () => reject(new Error("decode failed"));
+      img.onload = () => {
+        try {
+          let { width, height } = img;
+          const scale = Math.min(1, maxDim / Math.max(width, height));
+          width = Math.round(width * scale); height = Math.round(height * scale);
+          const canvas = document.createElement("canvas");
+          canvas.width = width; canvas.height = height;
+          canvas.getContext("2d").drawImage(img, 0, 0, width, height);
+          resolve(canvas.toDataURL("image/jpeg", quality));
+        } catch (e) { reject(e); }
+      };
+      img.src = reader.result;
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
 // ---------- SUBMISSIONS ----------
 // Each submission is its own document in the "entries" collection. This matters:
 // when everything lived in one shared document, whichever device saved last
 // overwrote submissions made by anyone else since that device loaded the app.
 async function saveEntry(record) {
+  const size = approxBytes(record);
+  if (size > FIRESTORE_DOC_LIMIT) {
+    const mb = (size / (1024 * 1024)).toFixed(2);
+    throw new Error(
+      `TOO_BIG:This day is too large to save (${mb}MB). It's the receipt photos, not your signal. ` +
+      `Remove one receipt and submit, then add the other day separately \u2014 or retake the photo smaller.`
+    );
+  }
   await setDoc(doc(db, "entries", String(record.id)), record);
 }
 async function deleteEntry(recordId) {
@@ -477,18 +522,28 @@ function FitterForm({ fitterName, onLogout, onSubmit, sites, allEntries, lockedW
   };
   const handleReceiptUpload = (i, ei, file) => {
     if (!file) return;
-    // Firestore documents have a ~1MB limit; receipts are stored inline, so cap the file size.
-    const maxBytes = 900 * 1024;
-    if (file.size > maxBytes) {
-      alert("That file is a bit large (over ~0.9MB). Please use a smaller photo or PDF — most phone cameras let you send a smaller size, or you can take a fresh photo.");
+    // Receipts are stored inside the submission, and the whole submission must stay
+    // under 1MB. Photos are shrunk automatically so several can fit on one day.
+    const isPdf = file.type === "application/pdf" || /\.pdf$/i.test(file.name || "");
+    if (isPdf) {
+      if (file.size > 700 * 1024) {
+        alert("That PDF is too large to attach (over ~0.7MB). Please use a photo of the receipt instead, or a smaller PDF.");
+        return;
+      }
+      const reader = new FileReader();
+      reader.onload = (e) => updateExpense(i, ei, "receipt", { data: e.target.result, type: "pdf", name: file.name || "receipt" });
+      reader.readAsDataURL(file);
       return;
     }
-    const reader = new FileReader();
-    reader.onload = (e) => {
-      const isPdf = file.type === "application/pdf" || /\.pdf$/i.test(file.name || "");
-      updateExpense(i, ei, "receipt", { data: e.target.result, type: isPdf ? "pdf" : "image", name: file.name || "receipt" });
-    };
-    reader.readAsDataURL(file);
+    compressImage(file)
+      .then(data => {
+        if (data.length > 700 * 1024) {
+          alert("That photo is still too large after shrinking. Please retake it a bit further back, or use your phone's smaller photo size.");
+          return;
+        }
+        updateExpense(i, ei, "receipt", { data, type: "image", name: file.name || "receipt" });
+      })
+      .catch(() => alert("Sorry, that photo couldn't be attached. Please try taking it again."));
   };
   const removeExpense = (i, ei) => {
     const updated = [...entries];
@@ -594,6 +649,13 @@ function FitterForm({ fitterName, onLogout, onSubmit, sites, allEntries, lockedW
       }
     }));
 
+    // Too big to save? Warn now rather than failing on submit.
+    const recordSize = approxBytes({ fitter: fitterName, entries: builtEntries });
+    if (recordSize > SAFE_DOC_BYTES) {
+      const photos = builtEntries.reduce((a, e) => a + (e.expenses || []).filter(x => x.receipt).length, 0);
+      warnings.push(`This is a large submission (${(recordSize / (1024 * 1024)).toFixed(2)}MB) because of ${photos} receipt photo(s). If it won't send, submit fewer days at a time.`);
+    }
+
     // Already sent in an earlier submission this fortnight? (stops accidental double-logging)
     const alreadySent = (allEntries || []).filter(r => r.fitter === fitterName && r.weekKey === getWeekKey());
     builtEntries.forEach(ne => {
@@ -656,7 +718,9 @@ function FitterForm({ fitterName, onLogout, onSubmit, sites, allEntries, lockedW
       setConfirmedCorrect(false);
       setSubmitted(true);
     } catch (err) {
-      alert("Sorry — that didn't save. Please check your signal and try again.");
+      const msg = String(err?.message || "");
+      if (msg.startsWith("TOO_BIG:")) alert(msg.slice(8));
+      else alert("Sorry — that didn't save. Please check your signal and try again.");
     } finally {
       setSubmitting(false);
     }
@@ -1610,14 +1674,21 @@ function ExpensesTab({ companyExpenses, sites, allEntries, excludedExpenses, onC
 
   const handleReceipt = (file) => {
     if (!file) return;
-    if (file.size > 900 * 1024) { setError("That file is a bit large (over ~0.9MB). Please use a smaller photo or PDF."); return; }
-    const reader = new FileReader();
-    reader.onload = (ev) => {
-      const isPdf = file.type === "application/pdf" || /\.pdf$/i.test(file.name || "");
-      setReceipt({ data: ev.target.result, type: isPdf ? "pdf" : "image", name: file.name || "receipt" });
-      setError("");
-    };
-    reader.readAsDataURL(file);
+    const isPdf = file.type === "application/pdf" || /\.pdf$/i.test(file.name || "");
+    if (isPdf) {
+      if (file.size > 700 * 1024) { setError("That PDF is too large (over ~0.7MB). Please use a photo or a smaller PDF."); return; }
+      const reader = new FileReader();
+      reader.onload = (ev) => { setReceipt({ data: ev.target.result, type: "pdf", name: file.name || "receipt" }); setError(""); };
+      reader.readAsDataURL(file);
+      return;
+    }
+    compressImage(file)
+      .then(data => {
+        if (data.length > 700 * 1024) { setError("That photo is still too large after shrinking. Please retake it a bit further back."); return; }
+        setReceipt({ data, type: "image", name: file.name || "receipt" });
+        setError("");
+      })
+      .catch(() => setError("Sorry, that photo couldn't be attached. Please try again."));
   };
 
   const resetForm = () => { setClient(""); setSiteId(""); setDescription(""); setAmount(""); setReceipt(null); setEditingId(null); setError(""); if (fileRef.current) fileRef.current.value = ""; };
