@@ -2989,83 +2989,91 @@ function SubmissionsTab({ allEntries, sites, lockedWeeks, fittersList, onDeleteR
                 </div>
               </div>
 
-              {group.records.map(record => (
-                editingId === record.id ? (
-                  <div key={record.id} style={{ padding: 10, background: "#faf6ef" }}>
-                    <EditSubmission
-                      record={record}
-                      sites={sites}
-                      allEntries={allEntries}
-                      onSave={async (updated) => { await onUpdateRecord(record.id, updated); setEditingId(null); }}
-                      onCancel={() => setEditingId(null)}
-                    />
-                  </div>
-                ) : (
-                  <div key={record.id}>
-                    {typeof confirmDeleteId === "string" && confirmDeleteId.startsWith(record.id + "::") && (() => {
-                      const di = parseInt(confirmDeleteId.split("::")[1], 10);
-                      const dEntry = record.entries[di];
-                      const lastOne = record.entries.length === 1;
-                      return (
-                        <div style={{ padding: "12px 14px", background: "#fff5f5", borderBottom: "1px solid #f5c6cb", display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10 }}>
-                          <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 12, color: "#c0392b" }}>
-                            Delete {dEntry?.day?.slice(0,3)} {dEntry?.date} ({dEntry?.hours || 0}h at {dEntry?.siteName})? Can&apos;t be undone.
-                          </span>
-                          <div style={{ display: "flex", gap: 8, flexShrink: 0 }}>
-                            <button onClick={() => setConfirmDeleteId(null)} style={{ fontFamily: "'DM Mono', monospace", fontSize: 11, background: "none", border: "1px solid #ddd", borderRadius: 6, padding: "5px 12px", cursor: "pointer", color: "#888" }}>Cancel</button>
-                            <button onClick={async () => {
-                              if (lastOne) await onDeleteRecord(record.id);
-                              else await onUpdateRecord(record.id, { ...record, entries: record.entries.filter((_, idx) => idx !== di) });
-                              setConfirmDeleteId(null);
-                            }} style={{ fontFamily: "'DM Mono', monospace", fontSize: 11, background: "#c0392b", border: "none", borderRadius: 6, padding: "5px 12px", cursor: "pointer", color: "#fff" }}>Yes, delete</button>
-                          </div>
-                        </div>
-                      );
-                    })()}
-                    {record.entries.map((entry, i) => (
-                      <div key={i} style={{ padding: "10px 14px", borderBottom: "1px solid #f5f2ed", display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8 }}>
-                        <div style={{ flex: 1 }}>
-                          <div style={{ display: "grid", gridTemplateColumns: "56px 1fr 1fr 46px", gap: 8, marginBottom: (entryAreas(entry).length || entry.expenses?.length) ? 6 : 0 }}>
-                            <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 11, color: "#aaa" }}>{entry.day?.slice(0,3)}</span>
-                            <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 12, color: "#555" }}>{entry.siteName}</span>
-                            <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 12, color: "#C8A96E" }}>{entry.client}</span>
-                            <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 12, color: "#1a1a1a", textAlign: "right" }}>{(entry.hours || 0)}h</span>
-                          </div>
-                          {entryAreas(entry).length > 0 && (
-                            <div style={{ display: "flex", gap: 4, flexWrap: "wrap", paddingLeft: 64, marginBottom: 4 }}>
-                              {entryAreas(entry).map((a, ai) => (
-                                <span key={ai} style={{ fontFamily: "'DM Mono', monospace", fontSize: 10, padding: "2px 7px", background: "#f0ece6", borderRadius: 10, color: "#666" }}>{a}</span>
-                              ))}
-                            </div>
-                          )}
-                          {entry.expenses?.length > 0 && (
-                            <div style={{ paddingLeft: 64 }}>
-                              {entry.expenses.map((exp, ei) => (
-                                <div key={ei} style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
-                                  <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 11, color: "#888" }}>💰 {exp.description} — <strong>£{(exp.amount || 0).toFixed(2)}</strong></span>
-                                  {exp.receipt && (
-                                    receiptIsPdf(exp.receipt)
-                                      ? <span onClick={() => openReceipt(exp.receipt)} style={{ fontFamily: "'DM Mono', monospace", fontSize: 9, color: "#888", border: "1px solid #e0dbd4", borderRadius: 4, padding: "3px 6px", cursor: "pointer" }}>📄</span>
-                                      : <img src={receiptSrc(exp.receipt)} alt="" style={{ width: 28, height: 28, objectFit: "cover", borderRadius: 4, border: "1px solid #e0dbd4", cursor: "pointer" }}
-                                          onClick={() => openReceipt(exp.receipt)} />
-                                  )}
-                                </div>
-                              ))}
-                            </div>
-                          )}
-                        </div>
-                        {/* Edit opens the whole submission; Del removes just this day */}
-                        {!locked && (
-                          <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
-                            <button onClick={() => setEditingId(record.id)} style={{ fontFamily: "'DM Mono', monospace", fontSize: 10, background: "none", border: "1px solid #e0dbd4", borderRadius: 6, padding: "3px 8px", cursor: "pointer", color: "#888" }}>Edit</button>
-                            <button onClick={() => setConfirmDeleteId(`${record.id}::${i}`)} style={{ fontFamily: "'DM Mono', monospace", fontSize: 10, background: "none", border: "1px solid #f5c6cb", borderRadius: 6, padding: "3px 8px", cursor: "pointer", color: "#c0392b" }}>Del</button>
-                          </div>
-                        )}
-                      </div>
-                    ))}
-                  </div>
-                )
+              {/* Any submission being edited opens above the day list */}
+              {group.records.filter(r => editingId === r.id).map(record => (
+                <div key={record.id} style={{ padding: 10, background: "#faf6ef" }}>
+                  <EditSubmission
+                    record={record}
+                    sites={sites}
+                    allEntries={allEntries}
+                    onSave={async (updated) => { await onUpdateRecord(record.id, updated); setEditingId(null); }}
+                    onCancel={() => setEditingId(null)}
+                  />
+                </div>
               ))}
+
+              {/* Delete confirmation for a single day */}
+              {typeof confirmDeleteId === "string" && confirmDeleteId.startsWith("day::") && (() => {
+                const [, recId, idxStr] = confirmDeleteId.split("::");
+                const record = group.records.find(r => String(r.id) === recId);
+                if (!record) return null;
+                const di = parseInt(idxStr, 10);
+                const dEntry = record.entries[di];
+                const lastOne = record.entries.length === 1;
+                return (
+                  <div style={{ padding: "12px 14px", background: "#fff5f5", borderBottom: "1px solid #f5c6cb", display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10 }}>
+                    <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 12, color: "#c0392b" }}>
+                      Delete {dEntry?.day?.slice(0,3)} {dEntry?.date} ({dEntry?.hours || 0}h at {dEntry?.siteName})? Can&apos;t be undone.
+                    </span>
+                    <div style={{ display: "flex", gap: 8, flexShrink: 0 }}>
+                      <button onClick={() => setConfirmDeleteId(null)} style={{ fontFamily: "'DM Mono', monospace", fontSize: 11, background: "none", border: "1px solid #ddd", borderRadius: 6, padding: "5px 12px", cursor: "pointer", color: "#888" }}>Cancel</button>
+                      <button onClick={async () => {
+                        if (lastOne) await onDeleteRecord(record.id);
+                        else await onUpdateRecord(record.id, { ...record, entries: record.entries.filter((_, idx) => idx !== di) });
+                        setConfirmDeleteId(null);
+                      }} style={{ fontFamily: "'DM Mono', monospace", fontSize: 11, background: "#c0392b", border: "none", borderRadius: 6, padding: "5px 12px", cursor: "pointer", color: "#fff" }}>Yes, delete</button>
+                    </div>
+                  </div>
+                );
+              })()}
+
+              {/* All of this fitter's days for the fortnight, in date order */}
+              {group.records
+                .filter(r => editingId !== r.id)
+                .flatMap(record => (record.entries || []).map((entry, idx) => ({ record, entry, idx })))
+                .sort((a, b) => (a.entry.date || "").localeCompare(b.entry.date || ""))
+                .map(({ record, entry, idx }) => (
+                  <div key={`${record.id}::${idx}`} style={{ padding: "10px 14px", borderBottom: "1px solid #f5f2ed", display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8 }}>
+                    <div style={{ flex: 1 }}>
+                      <div style={{ display: "grid", gridTemplateColumns: "92px 1fr 1fr 46px", gap: 8, marginBottom: (entryAreas(entry).length || entry.expenses?.length) ? 6 : 0 }}>
+                        <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 11, color: "#1a1a1a" }}>
+                          {entry.day?.slice(0,3)} {entry.date ? new Date(entry.date + "T00:00:00").toLocaleDateString("en-GB", { day: "numeric", month: "short" }) : ""}
+                        </span>
+                        <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 12, color: "#555" }}>{entry.siteName}</span>
+                        <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 12, color: "#C8A96E" }}>{entry.client}</span>
+                        <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 12, color: "#1a1a1a", textAlign: "right" }}>{(entry.hours || 0)}h</span>
+                      </div>
+                      {entryAreas(entry).length > 0 && (
+                        <div style={{ display: "flex", gap: 4, flexWrap: "wrap", paddingLeft: 100, marginBottom: 4 }}>
+                          {entryAreas(entry).map((a, ai) => (
+                            <span key={ai} style={{ fontFamily: "'DM Mono', monospace", fontSize: 10, padding: "2px 7px", background: "#f0ece6", borderRadius: 10, color: "#666" }}>{a}</span>
+                          ))}
+                        </div>
+                      )}
+                      {entry.expenses?.length > 0 && (
+                        <div style={{ paddingLeft: 100 }}>
+                          {entry.expenses.map((exp, ei) => (
+                            <div key={ei} style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
+                              <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 11, color: "#888" }}>💰 {exp.description} — <strong>£{(exp.amount || 0).toFixed(2)}</strong></span>
+                              {exp.receipt && (
+                                receiptIsPdf(exp.receipt)
+                                  ? <span onClick={() => openReceipt(exp.receipt)} style={{ fontFamily: "'DM Mono', monospace", fontSize: 9, color: "#888", border: "1px solid #e0dbd4", borderRadius: 4, padding: "3px 6px", cursor: "pointer" }}>📄</span>
+                                  : <img src={receiptSrc(exp.receipt)} alt="" style={{ width: 28, height: 28, objectFit: "cover", borderRadius: 4, border: "1px solid #e0dbd4", cursor: "pointer" }}
+                                      onClick={() => openReceipt(exp.receipt)} />
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                    {!locked && (
+                      <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
+                        <button onClick={() => setEditingId(record.id)} style={{ fontFamily: "'DM Mono', monospace", fontSize: 10, background: "none", border: "1px solid #e0dbd4", borderRadius: 6, padding: "3px 8px", cursor: "pointer", color: "#888" }}>Edit</button>
+                        <button onClick={() => setConfirmDeleteId(`day::${record.id}::${idx}`)} style={{ fontFamily: "'DM Mono', monospace", fontSize: 10, background: "none", border: "1px solid #f5c6cb", borderRadius: 6, padding: "3px 8px", cursor: "pointer", color: "#c0392b" }}>Del</button>
+                      </div>
+                    )}
+                  </div>
+                ))}
             </div>
           );
         });
