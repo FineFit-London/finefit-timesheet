@@ -2026,10 +2026,7 @@ function InvoicesTab({ allEntries, rates, sites, lockedWeeks, noIndigo, billedJo
   });
 
   // Build aggregated fitter+site totals, splitting normal vs overtime hours
-  const siteMult = (siteName) => {
-    const s = (sites || []).find(x => x.name === siteName);
-    return s?.otMultiplier ?? 1.5;
-  };
+  const siteMult = (siteName) => multiplierForSite((sites || []).find(x => x.name === siteName));
   const fitterSiteTotals = {};
   filtered.forEach(record => {
     const entries = filterClient === "all" ? record.entries : record.entries.filter(en => en.client === filterClient);
