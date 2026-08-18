@@ -160,6 +160,12 @@ function multiplierForSite(site) {
 }
 function upliftLabel(site) { return site?.workAway ? "work away" : "overtime"; }
 
+// A day can be left off the client's bill and/or the fitter's Indigo payment
+// without deleting the hours. dayFlags[dayKey] = { noClient: true, noIndigo: true }
+function dayFlagKey(recordId, entry) { return `${recordId}::${entry.date}::${entry.siteId}`; }
+function isOffClient(dayFlags, recordId, entry) { return !!(dayFlags || {})[dayFlagKey(recordId, entry)]?.noClient; }
+function isOffIndigo(dayFlags, recordId, entry) { return !!(dayFlags || {})[dayFlagKey(recordId, entry)]?.noIndigo; }
+
 // On a fixed-price job, Tom can charge part or all of a day as an extra.
 // extraDays[dayKey] holds the chargeable HOURS. Older data stored `true`,
 // which meant the whole day, so treat that as all of the logged hours.
@@ -247,6 +253,40 @@ function compressImage(file, maxDim = 1400, quality = 0.6) {
     };
     reader.readAsDataURL(file);
   });
+}
+
+// ---------- INVOICE NUMBERING ----------
+// Numbers run FFL<base>.<n> — the base groups a fortnight, the suffix is one per
+// client, e.g. FFL224.1, FFL224.2. Numbers are only used up when Tom marks an
+// invoice as issued, so previewing never burns one.
+const INVOICE_PREFIX = "FFL";
+function parseInvoiceNumber(num) {
+  const m = /^([A-Za-z]*)(\d+)(?:\.(\d+))?$/.exec(String(num || "").trim());
+  if (!m) return null;
+  return { prefix: m[1] || INVOICE_PREFIX, base: parseInt(m[2], 10), suffix: m[3] ? parseInt(m[3], 10) : null };
+}
+function formatInvoiceNumber(base, suffix, prefix = INVOICE_PREFIX) {
+  return `${prefix}${base}.${suffix}`;
+}
+// The base already used for this fortnight, or the next unused base if it's new.
+function baseForPeriod(issued, weekKey, startingBase) {
+  const forPeriod = (issued || []).filter(i => i.weekKey === weekKey).map(i => parseInvoiceNumber(i.number)).filter(Boolean);
+  if (forPeriod.length) return Math.min(...forPeriod.map(p => p.base));
+  const allBases = (issued || []).map(i => parseInvoiceNumber(i.number)).filter(Boolean).map(p => p.base);
+  const highest = allBases.length ? Math.max(...allBases) : (startingBase - 1);
+  return Math.max(highest + 1, startingBase);
+}
+// Next free suffix within that fortnight's base.
+function nextSuffix(issued, base) {
+  const used = (issued || []).map(i => parseInvoiceNumber(i.number)).filter(p => p && p.base === base).map(p => p.suffix || 0);
+  return used.length ? Math.max(...used) + 1 : 1;
+}
+// The number to offer: reuse this client's existing one if already issued.
+function suggestInvoiceNumber(issued, weekKey, client, startingBase) {
+  const existing = (issued || []).find(i => i.weekKey === weekKey && i.client === client);
+  if (existing) return existing.number;
+  const base = baseForPeriod(issued, weekKey, startingBase);
+  return formatInvoiceNumber(base, nextSuffix(issued, base));
 }
 
 // ---------- SUBMISSIONS ----------
@@ -1362,7 +1402,7 @@ function AdminLogin({ onLogin }) {
 }
 
 // ---------- ADMIN DASHBOARD ----------
-function AdminDashboard({ allEntries, sites, rates, lockedWeeks, fittersList, pins, noIndigo, billedJobs, onToggleBilledJob, extraDays, onSetExtraDay, companyExpenses, onCompanyExpensesChange, clients, onClientsChange, onRenameClient, onUpdateSite, excludedExpenses, onToggleExcludedExpense, onSitesChange, onRatesChange, onDeleteRecord, onUpdateRecord, onToggleLock, onFittersChange, onResetPin, onToggleIndigo, onLogout }) {
+function AdminDashboard({ allEntries, sites, rates, lockedWeeks, fittersList, pins, noIndigo, billedJobs, onToggleBilledJob, extraDays, onSetExtraDay, companyExpenses, onCompanyExpensesChange, clients, onClientsChange, onRenameClient, onUpdateSite, dayFlags, onSetDayFlag, issuedInvoices, onIssueInvoice, onDeleteInvoice, invoiceStart, onInvoiceStartChange, excludedExpenses, onToggleExcludedExpense, onSitesChange, onRatesChange, onDeleteRecord, onUpdateRecord, onToggleLock, onFittersChange, onResetPin, onToggleIndigo, onLogout }) {
   const [tab, setTab] = useState("submissions");
   return (
     <div>
@@ -1380,10 +1420,10 @@ function AdminDashboard({ allEntries, sites, rates, lockedWeeks, fittersList, pi
           }}>{label}</button>
         ))}
       </div>
-      {tab === "submissions" && <SubmissionsTab allEntries={allEntries} sites={sites} lockedWeeks={lockedWeeks} fittersList={fittersList} onDeleteRecord={onDeleteRecord} onUpdateRecord={onUpdateRecord} />}
-      {tab === "report" && <InvoicesTab allEntries={allEntries} rates={rates} sites={sites} lockedWeeks={lockedWeeks} noIndigo={noIndigo} billedJobs={billedJobs} onToggleBilledJob={onToggleBilledJob} extraDays={extraDays} onSetExtraDay={onSetExtraDay} companyExpenses={companyExpenses} excludedExpenses={excludedExpenses} onToggleLock={onToggleLock} />}
+      {tab === "submissions" && <SubmissionsTab allEntries={allEntries} sites={sites} lockedWeeks={lockedWeeks} fittersList={fittersList} dayFlags={dayFlags} onSetDayFlag={onSetDayFlag} onDeleteRecord={onDeleteRecord} onUpdateRecord={onUpdateRecord} />}
+      {tab === "report" && <InvoicesTab allEntries={allEntries} rates={rates} sites={sites} lockedWeeks={lockedWeeks} noIndigo={noIndigo} billedJobs={billedJobs} onToggleBilledJob={onToggleBilledJob} extraDays={extraDays} onSetExtraDay={onSetExtraDay} dayFlags={dayFlags} companyExpenses={companyExpenses} excludedExpenses={excludedExpenses} issuedInvoices={issuedInvoices} onIssueInvoice={onIssueInvoice} onDeleteInvoice={onDeleteInvoice} invoiceStart={invoiceStart} onInvoiceStartChange={onInvoiceStartChange} onToggleLock={onToggleLock} />}
       {tab === "expenses" && <ExpensesTab companyExpenses={companyExpenses} sites={sites} allEntries={allEntries} excludedExpenses={excludedExpenses} onCompanyExpensesChange={onCompanyExpensesChange} onToggleExcludedExpense={onToggleExcludedExpense} />}
-      {tab === "earnings" && <EarningsTab allEntries={allEntries} rates={rates} sites={sites} noIndigo={noIndigo} billedJobs={billedJobs} extraDays={extraDays} />}
+      {tab === "earnings" && <EarningsTab allEntries={allEntries} rates={rates} sites={sites} noIndigo={noIndigo} billedJobs={billedJobs} extraDays={extraDays} dayFlags={dayFlags} />}
       {tab === "rates" && <RatesTab allEntries={allEntries} rates={rates} fittersList={fittersList} onRatesChange={onRatesChange} />}
       {tab === "fitters" && <FittersTab fittersList={fittersList} allEntries={allEntries} pins={pins} noIndigo={noIndigo} onFittersChange={onFittersChange} onResetPin={onResetPin} onToggleIndigo={onToggleIndigo} />}
       {tab === "clients" && <ClientsTab clients={clients} sites={sites} allEntries={allEntries} onClientsChange={onClientsChange} onRenameClient={onRenameClient} />}
@@ -1865,7 +1905,7 @@ function ExpensesTab({ companyExpenses, sites, allEntries, excludedExpenses, onC
 }
 
 // ---------- EARNINGS TAB ----------
-function EarningsTab({ allEntries, rates, sites, noIndigo, billedJobs, extraDays }) {
+function EarningsTab({ allEntries, rates, sites, noIndigo, billedJobs, extraDays, dayFlags }) {
   const [view, setView] = useState("period"); // "period" | "client" | "fitter"
 
   const siteMult = (siteName) => multiplierForSite((sites || []).find(x => x.name === siteName));
@@ -2009,12 +2049,17 @@ function EarningsTab({ allEntries, rates, sites, noIndigo, billedJobs, extraDays
 }
 
 // ---------- INVOICES TAB ----------
-function InvoicesTab({ allEntries, rates, sites, lockedWeeks, noIndigo, billedJobs, onToggleBilledJob, extraDays, onSetExtraDay, companyExpenses, excludedExpenses, onToggleLock }) {
+function InvoicesTab({ allEntries, rates, sites, lockedWeeks, noIndigo, billedJobs, onToggleBilledJob, extraDays, onSetExtraDay, dayFlags, companyExpenses, excludedExpenses, issuedInvoices, onIssueInvoice, onDeleteInvoice, invoiceStart, onInvoiceStartChange, onToggleLock }) {
   const weeks = [...new Set(allEntries.map(e => e.weekKey))].sort().reverse();
   const clients = [...new Set(allEntries.flatMap(e => e.entries.map(en => en.client)).filter(Boolean))].sort();
   const [filterWeek, setFilterWeek] = useState(weeks[0] || "all");
   const [filterClient, setFilterClient] = useState("all");
-  const [invoiceNum, setInvoiceNum] = useState("FFL001");
+  const [invoiceNum, setInvoiceNum] = useState("");
+  const [numTouched, setNumTouched] = useState(false);
+  const [startingBase, setStartingBase] = useState(() => {
+    const saved = parseInt(localStorage.getItem("finefit_invoice_start") || "", 10);
+    return (!isNaN(saved) && saved > 0) ? saved : 224;
+  });
   const [invoiceDate, setInvoiceDate] = useState(new Date().toLocaleDateString("en-GB"));
   const [dueDate, setDueDate] = useState(() => { const d = new Date(); d.setDate(d.getDate() + 7); return d.toLocaleDateString("en-GB"); });
   const [activeDoc, setActiveDoc] = useState("client"); // "client" | "indigo"
@@ -2026,28 +2071,43 @@ function InvoicesTab({ allEntries, rates, sites, lockedWeeks, noIndigo, billedJo
   });
 
   // Build aggregated fitter+site totals, splitting normal vs overtime hours
+  // Suggest the right number for this fortnight + client, unless Tom has typed his own
+  useEffect(() => {
+    if (numTouched) return;
+    if (filterWeek === "all" || filterClient === "all") { setInvoiceNum(""); return; }
+    setInvoiceNum(suggestInvoiceNumber(issuedInvoices, filterWeek, filterClient, startingBase));
+  }, [filterWeek, filterClient, issuedInvoices, startingBase, numTouched]);
+
   const siteMult = (siteName) => multiplierForSite((sites || []).find(x => x.name === siteName));
   const fitterSiteTotals = {};
   filtered.forEach(record => {
     const entries = filterClient === "all" ? record.entries : record.entries.filter(en => en.client === filterClient);
     entries.forEach(en => {
       const key = `${record.fitter}|||${en.siteName}|||${en.client}`;
-      if (!fitterSiteTotals[key]) fitterSiteTotals[key] = { fitter: record.fitter, site: en.siteName, client: en.client, normalHours: 0, overtimeHours: 0, expenses: [] };
+      if (!fitterSiteTotals[key]) fitterSiteTotals[key] = { fitter: record.fitter, site: en.siteName, client: en.client,
+        normalHours: 0, overtimeHours: 0, payNormalHours: 0, payOvertimeHours: 0, expenses: [] };
       // Use stored split if present, else derive from day (back-compat with old entries)
       let nh = en.normalHours, oh = en.overtimeHours;
       if (nh === undefined || oh === undefined) {
         const _st = (sites || []).find(x => x.name === en.siteName); const s = splitOvertime(en.day, en.hours || 0, en.date, _st?.workAway, otThresholdOf(_st)); nh = s.normal; oh = s.overtime;
       }
-      fitterSiteTotals[key].normalHours += (nh || 0);
-      fitterSiteTotals[key].overtimeHours += (oh || 0);
-      (en.expenses || []).forEach(exp => fitterSiteTotals[key].expenses.push(exp));
+      // A day can be held back from the client's bill, the fitter's pay, or both.
+      if (!isOffClient(dayFlags, record.id, en)) {
+        fitterSiteTotals[key].normalHours += (nh || 0);
+        fitterSiteTotals[key].overtimeHours += (oh || 0);
+      }
+      if (!isOffIndigo(dayFlags, record.id, en)) {
+        fitterSiteTotals[key].payNormalHours += (nh || 0);
+        fitterSiteTotals[key].payOvertimeHours += (oh || 0);
+      }
+      if (!isOffClient(dayFlags, record.id, en)) (en.expenses || []).forEach(exp => fitterSiteTotals[key].expenses.push(exp));
     });
   });
 
   const siteByName = (name) => (sites || []).find(x => x.name === name);
   const isFixedSite = (name) => siteByName(name)?.pricing === "fixed";
 
-  const lines = Object.values(fitterSiteTotals).map(({ fitter, site, client, normalHours, overtimeHours, expenses }) => {
+  const lines = Object.values(fitterSiteTotals).map(({ fitter, site, client, normalHours, overtimeHours, payNormalHours, payOvertimeHours, expenses }) => {
     const rateKey = `${fitter}|||${site}`;
     const fixed = isFixedSite(site);
     // On fixed-price jobs the client isn't charged per hour — but fitters are still paid hourly.
@@ -2059,8 +2119,8 @@ function InvoicesTab({ allEntries, rates, sites, lockedWeeks, noIndigo, billedJo
     const hours = normalHours + overtimeHours;
     const expTotal = expenses.reduce((a, e) => a + (e.amount || 0), 0);
     const clientCost = fixed ? 0 : (normalHours * clientRate + overtimeHours * otClientRate);
-    const fitterCost = normalHours * fitterRate + overtimeHours * otFitterRate;
-    return { fitter, site, client, hours, normalHours, overtimeHours, mult, uplift: upliftLabel(siteByName(site)), clientRate, fitterRate, otClientRate, otFitterRate, clientCost, fitterCost, expTotal, expenses, fixed };
+    const fitterCost = payNormalHours * fitterRate + payOvertimeHours * otFitterRate;
+    return { fitter, site, client, hours, normalHours, overtimeHours, payNormalHours, payOvertimeHours, mult, uplift: upliftLabel(siteByName(site)), clientRate, fitterRate, otClientRate, otFitterRate, clientCost, fitterCost, expTotal, expenses, fixed };
   });
 
   // Hourly lines only appear on the client invoice; fixed-price jobs are billed as one line.
@@ -2266,7 +2326,7 @@ function InvoicesTab({ allEntries, rates, sites, lockedWeeks, noIndigo, billedJo
         <td style="padding:7px 10px">${rowNum}</td>
         <td style="padding:7px 10px"><strong>${l.fitter}</strong></td>
         <td style="padding:7px 10px;color:#888;font-size:11px;">normal</td>
-        <td style="padding:7px 10px;text-align:right">${l.normalHours.toFixed(2)}</td>
+        <td style="padding:7px 10px;text-align:right">${l.payNormalHours.toFixed(2)}</td>
         <td style="padding:7px 10px;text-align:right">£${l.fitterRate.toFixed(2)}</td>
         <td style="padding:7px 10px;text-align:right"><strong>£${(l.normalHours * l.fitterRate).toFixed(2)}</strong></td>
         <td style="padding:7px 10px">${l.site}</td>
@@ -2276,7 +2336,7 @@ function InvoicesTab({ allEntries, rates, sites, lockedWeeks, noIndigo, billedJo
         <td style="padding:7px 10px">${++rowNum}</td>
         <td style="padding:7px 10px"><strong>${l.fitter}</strong></td>
         <td style="padding:7px 10px;color:#b7860b;font-size:11px;">${l.uplift} ${l.mult}×</td>
-        <td style="padding:7px 10px;text-align:right">${l.overtimeHours.toFixed(2)}</td>
+        <td style="padding:7px 10px;text-align:right">${l.payOvertimeHours.toFixed(2)}</td>
         <td style="padding:7px 10px;text-align:right">£${l.otFitterRate.toFixed(2)}</td>
         <td style="padding:7px 10px;text-align:right"><strong>£${(l.overtimeHours * l.otFitterRate).toFixed(2)}</strong></td>
         <td style="padding:7px 10px">${l.site}</td>
@@ -2331,8 +2391,8 @@ function InvoicesTab({ allEntries, rates, sites, lockedWeeks, noIndigo, billedJo
         const bucket = f.rates[key] || (f.rates[key] = { rate, order: 0, sites: [] });
         bucket.sites.push({ site, hours, gross: hours * rate });
       };
-      push(l.fitterRate, l.normalHours, l.site);
-      push(l.otFitterRate, l.overtimeHours, l.site);
+      push(l.fitterRate, l.payNormalHours, l.site);
+      push(l.otFitterRate, l.payOvertimeHours, l.site);
       f.expTotal += (l.expenses || []).reduce((a, e) => a + (e.amount || 0), 0);
     });
 
@@ -2601,7 +2661,16 @@ function InvoicesTab({ allEntries, rates, sites, lockedWeeks, noIndigo, billedJo
             {clients.map(c => <option key={c}>{c}</option>)}
           </select>
         </div>
-        <div><label style={labelStyle}>Invoice No.</label><input value={invoiceNum} onChange={e => setInvoiceNum(e.target.value)} style={{ ...inputStyle, fontSize: 12 }} /></div>
+        <div>
+          <label style={labelStyle}>Invoice No.</label>
+          <input value={invoiceNum} onChange={e => { setInvoiceNum(e.target.value); setNumTouched(true); }} placeholder="pick a fortnight + client" style={{ ...inputStyle, fontSize: 12 }} />
+          {(() => {
+            const already = (issuedInvoices || []).find(i => i.number === invoiceNum);
+            if (already) return <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 10, color: "#1a6f4b" }}>Issued {already.issuedOn} · {already.client}</span>;
+            if (invoiceNum) return <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 10, color: "#aaa" }}>Next free number · not issued yet</span>;
+            return null;
+          })()}
+        </div>
         <div><label style={labelStyle}>Invoice Date</label><input value={invoiceDate} onChange={e => setInvoiceDate(e.target.value)} style={{ ...inputStyle, fontSize: 12 }} /></div>
         <div><label style={labelStyle}>Due Date</label><input value={dueDate} onChange={e => setDueDate(e.target.value)} style={{ ...inputStyle, fontSize: 12 }} /></div>
       </div>
@@ -2761,7 +2830,7 @@ function InvoicesTab({ allEntries, rates, sites, lockedWeeks, noIndigo, billedJo
                       <tr key={`${i}-n`} style={{ borderBottom: "1px solid #f5f2ed" }}>
                         <td style={tdStyle}>{l.fitter}</td>
                         <td style={{ ...tdStyle, color: "#888" }}>{l.site}</td>
-                        <td style={{ ...tdStyle, textAlign: "right", fontFamily: "'DM Mono', monospace" }}>{l.normalHours.toFixed(2)}</td>
+                        <td style={{ ...tdStyle, textAlign: "right", fontFamily: "'DM Mono', monospace" }}>{l.payNormalHours.toFixed(2)}</td>
                         <td style={{ ...tdStyle, textAlign: "right", fontFamily: "'DM Mono', monospace" }}>{l.fitterRate > 0 ? `£${l.fitterRate.toFixed(2)}` : <span style={{ color: "#f39c12" }}>Set rate</span>}</td>
                         <td style={{ ...tdStyle, textAlign: "right", fontFamily: "'DM Mono', monospace", fontWeight: 600 }}>{l.fitterRate > 0 ? toGBP(l.normalHours * l.fitterRate) : "—"}</td>
                       </tr>
@@ -2770,7 +2839,7 @@ function InvoicesTab({ allEntries, rates, sites, lockedWeeks, noIndigo, billedJo
                       <tr key={`${i}-o`} style={{ borderBottom: "1px solid #f5f2ed", background: "#fffaf0" }}>
                         <td style={tdStyle}>{l.fitter}</td>
                         <td style={{ ...tdStyle, color: "#b7860b" }}>{l.site} · {l.uplift} {l.mult}×</td>
-                        <td style={{ ...tdStyle, textAlign: "right", fontFamily: "'DM Mono', monospace" }}>{l.overtimeHours.toFixed(2)}</td>
+                        <td style={{ ...tdStyle, textAlign: "right", fontFamily: "'DM Mono', monospace" }}>{l.payOvertimeHours.toFixed(2)}</td>
                         <td style={{ ...tdStyle, textAlign: "right", fontFamily: "'DM Mono', monospace" }}>{l.fitterRate > 0 ? `£${l.otFitterRate.toFixed(2)}` : "—"}</td>
                         <td style={{ ...tdStyle, textAlign: "right", fontFamily: "'DM Mono', monospace", fontWeight: 600 }}>{l.fitterRate > 0 ? toGBP(l.overtimeHours * l.otFitterRate) : "—"}</td>
                       </tr>
@@ -2937,6 +3006,46 @@ function InvoicesTab({ allEntries, rates, sites, lockedWeeks, noIndigo, billedJo
             )}
           </div>
 
+          {/* Record this invoice number as issued, so the next one moves on */}
+          {invoiceNum && filterWeek !== "all" && filterClient !== "all" && (() => {
+            const already = (issuedInvoices || []).find(i => i.number === invoiceNum);
+            return (
+              <div style={{ border: "1px solid #e8e4de", borderRadius: 10, padding: 12, marginBottom: 12, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
+                <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 11, color: already ? "#1a6f4b" : "#888" }}>
+                  {already
+                    ? `${invoiceNum} is recorded as issued (${already.issuedOn}).`
+                    : `Mark ${invoiceNum} as issued once you've sent it — the next client then gets the following number.`}
+                </span>
+                {already
+                  ? <button onClick={() => onDeleteInvoice(invoiceNum)} style={{ fontFamily: "'DM Mono', monospace", fontSize: 11, background: "none", border: "1px solid #f5c6cb", borderRadius: 8, padding: "8px 12px", cursor: "pointer", color: "#c0392b", whiteSpace: "nowrap" }}>Undo</button>
+                  : <button onClick={() => onIssueInvoice({ number: invoiceNum, client: filterClient, weekKey: filterWeek, issuedOn: new Date().toLocaleDateString("en-GB"), total: clientGrandTotal })}
+                      style={{ ...btnStyle, marginTop: 0, padding: "9px 14px", fontSize: 11, whiteSpace: "nowrap" }}>Mark as issued</button>}
+              </div>
+            );
+          })()}
+
+          {/* Record of invoices already issued */}
+          {(issuedInvoices || []).length > 0 && (
+            <div style={{ border: "1px solid #e8e4de", borderRadius: 10, padding: 14, marginTop: 14 }}>
+              <div style={{ fontFamily: "'DM Mono', monospace", fontSize: 11, color: "#888", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 8 }}>Invoices issued</div>
+              {[...issuedInvoices]
+                .sort((a, b) => String(b.number).localeCompare(String(a.number), undefined, { numeric: true }))
+                .slice(0, 12)
+                .map(inv => (
+                  <div key={inv.number} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, padding: "6px 0", borderBottom: "1px solid #f5f2ed" }}>
+                    <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 11, color: "#1a1a1a" }}>
+                      {inv.number} <span style={{ color: "#C8A96E" }}>{inv.client}</span>
+                      <span style={{ color: "#aaa", marginLeft: 8 }}>{periodLabelShort(inv.weekKey)} · issued {inv.issuedOn}</span>
+                    </span>
+                    <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 11, color: "#1a1a1a", flexShrink: 0 }}>{toGBP(inv.total || 0)}</span>
+                  </div>
+                ))}
+              <p style={{ fontFamily: "'DM Mono', monospace", fontSize: 10, color: "#bbb", margin: "8px 0 0 0" }}>
+                Each fortnight shares a base number, with .1 .2 .3 per client — so all invoices for a period stay grouped.
+              </p>
+            </div>
+          )}
+
           {/* Action buttons */}
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8 }}>
             <button onClick={printClientInvoice} style={{ ...btnStyle, marginTop: 0, padding: "12px 8px", fontSize: 12, textAlign: "center" }}>🖨️ Client Invoice</button>
@@ -2953,7 +3062,7 @@ function InvoicesTab({ allEntries, rates, sites, lockedWeeks, noIndigo, billedJo
 }
 
 // ---------- SUBMISSIONS TAB ----------
-function SubmissionsTab({ allEntries, sites, lockedWeeks, fittersList, onDeleteRecord, onUpdateRecord }) {
+function SubmissionsTab({ allEntries, sites, lockedWeeks, fittersList, dayFlags, onSetDayFlag, onDeleteRecord, onUpdateRecord }) {
   // Default to the fortnight in progress — older ones are still there in the dropdown.
   const [filterWeek, setFilterWeek] = useState(getWeekKey());
   const [filterFitter, setFilterFitter] = useState("all");
@@ -3020,7 +3129,7 @@ function SubmissionsTab({ allEntries, sites, lockedWeeks, fittersList, onDeleteR
           {clients.map(c => <option key={c}>{c}</option>)}
         </select>
       </div>
-      <p style={{ fontFamily: "'DM Mono', monospace", fontSize: 11, color: "#888", marginBottom: 16 }}>{filtered.length} submission{filtered.length !== 1 ? "s" : ""} · {totalHours.toFixed(1)} hrs</p>
+      <p style={{ fontFamily: "'DM Mono', monospace", fontSize: 11, color: "#888", marginBottom: 16 }}>{filtered.length} submission{filtered.length !== 1 ? "s" : ""} · {totalHours.toFixed(1)} hrs — tap “billed” or “paid” on a day to hold it back from the client invoice or the Indigo sheet without deleting it</p>
 
       {filtered.length === 0 ? (
         <div style={{ textAlign: "center", padding: "36px 12px", color: "#bbb", fontFamily: "'DM Mono', monospace", fontSize: 13 }}>
@@ -3081,7 +3190,7 @@ function SubmissionsTab({ allEntries, sites, lockedWeeks, fittersList, onDeleteR
                 return (
                   <div style={{ padding: "12px 14px", background: "#fff5f5", borderBottom: "1px solid #f5c6cb", display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10 }}>
                     <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 12, color: "#c0392b" }}>
-                      Delete {dEntry?.day?.slice(0,3)} {dEntry?.date} ({dEntry?.hours || 0}h at {dEntry?.siteName})? Can&apos;t be undone.
+                      Delete {dEntry?.day?.slice(0,3)} {dEntry?.date} ({dEntry?.hours || 0}h at {dEntry?.siteName})? This removes it from the invoice AND the Indigo sheet. To drop it from just one, use the &ldquo;billed&rdquo; / &ldquo;paid&rdquo; buttons instead.
                     </span>
                     <div style={{ display: "flex", gap: 8, flexShrink: 0 }}>
                       <button onClick={() => setConfirmDeleteId(null)} style={{ fontFamily: "'DM Mono', monospace", fontSize: 11, background: "none", border: "1px solid #ddd", borderRadius: 6, padding: "5px 12px", cursor: "pointer", color: "#888" }}>Cancel</button>
@@ -3134,12 +3243,29 @@ function SubmissionsTab({ allEntries, sites, lockedWeeks, fittersList, onDeleteR
                         </div>
                       )}
                     </div>
-                    {!locked && (
-                      <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
-                        <button onClick={() => setEditingId(record.id)} style={{ fontFamily: "'DM Mono', monospace", fontSize: 10, background: "none", border: "1px solid #e0dbd4", borderRadius: 6, padding: "3px 8px", cursor: "pointer", color: "#888" }}>Edit</button>
-                        <button onClick={() => setConfirmDeleteId(`day::${record.id}::${idx}`)} style={{ fontFamily: "'DM Mono', monospace", fontSize: 10, background: "none", border: "1px solid #f5c6cb", borderRadius: 6, padding: "3px 8px", cursor: "pointer", color: "#c0392b" }}>Del</button>
-                      </div>
-                    )}
+                    {!locked && (() => {
+                      const offC = isOffClient(dayFlags, record.id, entry);
+                      const offI = isOffIndigo(dayFlags, record.id, entry);
+                      const key = dayFlagKey(record.id, entry);
+                      return (
+                        <div style={{ display: "flex", gap: 6, flexShrink: 0, alignItems: "center" }}>
+                          <button onClick={() => onSetDayFlag(key, "noClient", !offC)}
+                            title={offC ? "Currently NOT charged to the client — tap to charge it" : "Leave this day off the client's invoice"}
+                            style={{ fontFamily: "'DM Mono', monospace", fontSize: 9, borderRadius: 6, padding: "3px 7px", cursor: "pointer",
+                              border: `1px solid ${offC ? "#c0392b" : "#e0dbd4"}`, background: offC ? "#fdecea" : "none", color: offC ? "#c0392b" : "#aaa" }}>
+                            {offC ? "not billed" : "billed"}
+                          </button>
+                          <button onClick={() => onSetDayFlag(key, "noIndigo", !offI)}
+                            title={offI ? "Currently NOT paid to the fitter — tap to pay it" : "Leave this day off the Indigo payment sheet"}
+                            style={{ fontFamily: "'DM Mono', monospace", fontSize: 9, borderRadius: 6, padding: "3px 7px", cursor: "pointer",
+                              border: `1px solid ${offI ? "#c0392b" : "#e0dbd4"}`, background: offI ? "#fdecea" : "none", color: offI ? "#c0392b" : "#aaa" }}>
+                            {offI ? "not paid" : "paid"}
+                          </button>
+                          <button onClick={() => setEditingId(record.id)} style={{ fontFamily: "'DM Mono', monospace", fontSize: 10, background: "none", border: "1px solid #e0dbd4", borderRadius: 6, padding: "3px 8px", cursor: "pointer", color: "#888" }}>Edit</button>
+                          <button onClick={() => setConfirmDeleteId(`day::${record.id}::${idx}`)} style={{ fontFamily: "'DM Mono', monospace", fontSize: 10, background: "none", border: "1px solid #f5c6cb", borderRadius: 6, padding: "3px 8px", cursor: "pointer", color: "#c0392b" }}>Del</button>
+                        </div>
+                      );
+                    })()}
                   </div>
                 ))}
             </div>
@@ -3572,6 +3698,9 @@ export default function App() {
   const [excludedExpenses, setExcludedExpenses] = useState({}); // expenses Tom won't pass on: { expKey: true }
   const [fitterDetails, setFitterDetails] = useState({}); // each fitter's own address for their pay statement
   const [clients, setClients] = useState([]); // the master client list, so spellings stay consistent
+  const [dayFlags, setDayFlags] = useState({}); // per-day: leave off the client invoice and/or the Indigo sheet
+  const [issuedInvoices, setIssuedInvoices] = useState([]); // record of every invoice actually issued
+  const [invoiceStart, setInvoiceStart] = useState(224); // Tom had reached FFL223
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -3579,8 +3708,8 @@ export default function App() {
     Promise.all([
       loadStr("finefit_fitter_name"),
       load("finefit_sites"), load("finefit_rates"),
-      load("finefit_locked_weeks"), load("finefit_fitters"), load("finefit_pins"), load("finefit_no_indigo"), load("finefit_billed_jobs"), load("finefit_extra_days"), load("finefit_company_expenses"), load("finefit_excluded_expenses"), load("finefit_fitter_details"), load("finefit_clients"),
-    ]).then(([name, savedSites, savedRates, savedLocks, savedFitters, savedPins, savedNoIndigo, savedBilled, savedExtra, savedCoExp, savedExcl, savedDetails, savedClients]) => {
+      load("finefit_locked_weeks"), load("finefit_fitters"), load("finefit_pins"), load("finefit_no_indigo"), load("finefit_billed_jobs"), load("finefit_extra_days"), load("finefit_company_expenses"), load("finefit_excluded_expenses"), load("finefit_fitter_details"), load("finefit_clients"), load("finefit_day_flags"), load("finefit_issued_invoices"), load("finefit_invoice_start"),
+    ]).then(([name, savedSites, savedRates, savedLocks, savedFitters, savedPins, savedNoIndigo, savedBilled, savedExtra, savedCoExp, savedExcl, savedDetails, savedClients, savedDayFlags, savedIssued, savedInvStart]) => {
       if (name) setFitterName(name);
       setSites(savedSites || []);
       setRates(savedRates || {});
@@ -3598,6 +3727,9 @@ export default function App() {
         ? savedClients
         : [...new Set((savedSites || []).map(s => s.client).filter(Boolean))].sort();
       setClients(seeded);
+      setDayFlags(savedDayFlags || {});
+      setIssuedInvoices(savedIssued || []);
+      if (savedInvStart) setInvoiceStart(savedInvStart);
       if (!(savedClients && savedClients.length) && seeded.length) save("finefit_clients", seeded);
       setLoading(false);
     });
@@ -3651,6 +3783,24 @@ export default function App() {
         e.siteId === updatedSite.id ? { ...e, siteName: updatedSite.name, client: updatedSite.client } : e) };
       await saveEntry(updated);
     }
+  };
+  const handleInvoiceStartChange = async (n) => { setInvoiceStart(n); await save("finefit_invoice_start", n); };
+  const handleIssueInvoice = async (entry) => {
+    const u = [...(issuedInvoices || []).filter(x => x.number !== entry.number), entry];
+    setIssuedInvoices(u); await save("finefit_issued_invoices", u);
+  };
+  const handleDeleteInvoice = async (number) => {
+    const u = (issuedInvoices || []).filter(x => x.number !== number);
+    setIssuedInvoices(u); await save("finefit_issued_invoices", u);
+  };
+  // Leave a single day off the client invoice, the Indigo sheet, or both,
+  // without deleting the hours themselves.
+  const handleSetDayFlag = async (dayKey, which, on) => {
+    const u = { ...dayFlags };
+    const cur = { ...(u[dayKey] || {}) };
+    if (on) cur[which] = true; else delete cur[which];
+    if (Object.keys(cur).length) u[dayKey] = cur; else delete u[dayKey];
+    setDayFlags(u); await save("finefit_day_flags", u);
   };
   const handleClientsChange = async (u) => { setClients(u); await save("finefit_clients", u); };
   // Renaming a client updates every site and every submitted entry so nothing splits in two.
@@ -3713,7 +3863,7 @@ export default function App() {
             <AdminLogin onLogin={() => setView("admin")} />
           ) : (
             <AdminDashboard allEntries={allEntries} sites={sites} rates={rates}
-              lockedWeeks={lockedWeeks} fittersList={fittersList} pins={pins} noIndigo={noIndigo} billedJobs={billedJobs} onToggleBilledJob={handleToggleBilledJob} extraDays={extraDays} onSetExtraDay={handleSetExtraDay} companyExpenses={companyExpenses} onCompanyExpensesChange={handleCompanyExpensesChange} clients={clients} onClientsChange={handleClientsChange} onUpdateSite={handleUpdateSite} onRenameClient={handleRenameClient} excludedExpenses={excludedExpenses} onToggleExcludedExpense={handleToggleExcludedExpense} onSitesChange={handleSitesChange}
+              lockedWeeks={lockedWeeks} fittersList={fittersList} pins={pins} noIndigo={noIndigo} billedJobs={billedJobs} onToggleBilledJob={handleToggleBilledJob} extraDays={extraDays} onSetExtraDay={handleSetExtraDay} companyExpenses={companyExpenses} onCompanyExpensesChange={handleCompanyExpensesChange} clients={clients} onClientsChange={handleClientsChange} onUpdateSite={handleUpdateSite} dayFlags={dayFlags} onSetDayFlag={handleSetDayFlag} issuedInvoices={issuedInvoices} onIssueInvoice={handleIssueInvoice} onDeleteInvoice={handleDeleteInvoice} invoiceStart={invoiceStart} onInvoiceStartChange={handleInvoiceStartChange} onRenameClient={handleRenameClient} excludedExpenses={excludedExpenses} onToggleExcludedExpense={handleToggleExcludedExpense} onSitesChange={handleSitesChange}
               onRatesChange={handleRatesChange} onDeleteRecord={handleDeleteRecord} onFittersChange={handleFittersChange} onResetPin={handleResetPin} onToggleIndigo={handleToggleIndigo}
               onUpdateRecord={handleUpdateRecord} onToggleLock={handleToggleLock} onLogout={() => setView("fitter")} />
           )}
