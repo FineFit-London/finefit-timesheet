@@ -2920,32 +2920,55 @@ function InvoicesTab({ allEntries, rates, sites, lockedWeeks, noIndigo, billedJo
                     </div>
                     {/* Charge part or all of a day as an extra (billed hourly on top) */}
                     {jobDays.length > 0 && (
-                      <div style={{ marginLeft: 26, marginTop: 6 }}>
-                        <div style={{ fontFamily: "'DM Mono', monospace", fontSize: 10, color: "#7a8f85", marginBottom: 5 }}>
+                      <div style={{ marginTop: 8 }}>
+                        <div style={{ fontFamily: "'DM Mono', monospace", fontSize: 10, color: "#7a8f85", marginBottom: 6 }}>
                           Extra / variation hours to charge on top. Leave blank if the day is covered by the fixed price.
                         </div>
-                        {jobDays.map(d => {
-                          const charged = extraHoursFor(extraDays, d.key, d.hours);
-                          const on = charged > 0;
-                          return (
-                            <div key={d.key} style={{ display: "flex", alignItems: "center", gap: 8, padding: "4px 0", flexWrap: "wrap" }}>
-                              <input type="number" min="0" max={d.hours} step="0.5"
-                                value={charged > 0 ? charged : ""}
-                                onChange={e => onSetExtraDay(d.key, Math.min(parseFloat(e.target.value) || 0, d.hours))}
-                                placeholder="0"
-                                style={{ width: 58, fontFamily: "'DM Mono', monospace", fontSize: 12, padding: "5px 7px", borderRadius: 6,
-                                  border: `1px solid ${on ? "#b5561f" : "#e0dbd4"}`, color: on ? "#b5561f" : "#555", background: "#fff", textAlign: "right" }} />
-                              <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 10, color: "#aaa" }}>of {d.hours}h</span>
-                              <button onClick={() => onSetExtraDay(d.key, on ? 0 : d.hours)}
-                                style={{ fontFamily: "'DM Mono', monospace", fontSize: 9, background: "none", border: "1px solid #e0dbd4", borderRadius: 5, padding: "3px 7px", cursor: "pointer", color: "#888" }}>
-                                {on ? "clear" : "all"}
-                              </button>
-                              <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 11, color: on ? "#b5561f" : "#888" }}>
-                                {d.day?.slice(0,3)} {d.date} · {d.fitter}{d.areas.length ? ` · ${d.areas.join(", ")}` : ""}
-                              </span>
-                            </div>
-                          );
-                        })}
+                        <div style={{ border: "1px solid #dfe6e2", borderRadius: 8, overflow: "hidden", background: "#fff" }}>
+                          {/* Column headings */}
+                          <div style={{ display: "grid", gridTemplateColumns: "84px 1fr 128px", gap: 10, padding: "6px 10px", background: "#eef2f0" }}>
+                            {["Day", "Fitter / work", "Charge extra"].map((h, hi) => (
+                              <span key={hi} style={{ fontFamily: "'DM Mono', monospace", fontSize: 9, color: "#7a8f85", textTransform: "uppercase", letterSpacing: "0.06em", textAlign: hi === 2 ? "right" : "left" }}>{h}</span>
+                            ))}
+                          </div>
+                          {jobDays.map((d, di) => {
+                            const charged = extraHoursFor(extraDays, d.key, d.hours);
+                            const on = charged > 0;
+                            // Only repeat the date when it changes, so multi-fitter days read as one block
+                            const newDay = di === 0 || jobDays[di - 1].date !== d.date;
+                            return (
+                              <div key={d.key} style={{
+                                display: "grid", gridTemplateColumns: "84px 1fr 128px", gap: 10, alignItems: "center",
+                                padding: "8px 10px",
+                                borderTop: newDay && di > 0 ? "1px solid #dfe6e2" : "1px solid #f4f7f6",
+                                background: on ? "#fff8f4" : "#fff",
+                              }}>
+                                <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 11, color: newDay ? "#1a1a1a" : "transparent", whiteSpace: "nowrap" }}>
+                                  {d.day?.slice(0, 3)} {d.date ? new Date(d.date + "T00:00:00").toLocaleDateString("en-GB", { day: "numeric", month: "short" }) : ""}
+                                </span>
+                                <div style={{ minWidth: 0 }}>
+                                  <div style={{ fontFamily: "'DM Mono', monospace", fontSize: 12, color: "#1a1a1a" }}>{d.fitter}</div>
+                                  {d.areas.length > 0 && (
+                                    <div style={{ fontFamily: "'DM Mono', monospace", fontSize: 10, color: "#999", marginTop: 2 }}>{d.areas.join(", ")}</div>
+                                  )}
+                                </div>
+                                <div style={{ display: "flex", alignItems: "center", justifyContent: "flex-end", gap: 5 }}>
+                                  <input type="number" min="0" max={d.hours} step="0.5"
+                                    value={charged > 0 ? charged : ""}
+                                    onChange={e => onSetExtraDay(d.key, Math.min(parseFloat(e.target.value) || 0, d.hours))}
+                                    placeholder="0"
+                                    style={{ width: 46, fontFamily: "'DM Mono', monospace", fontSize: 12, padding: "5px 6px", borderRadius: 6,
+                                      border: `1px solid ${on ? "#b5561f" : "#e0dbd4"}`, color: on ? "#b5561f" : "#555", background: "#fff", textAlign: "right" }} />
+                                  <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 10, color: "#aaa", whiteSpace: "nowrap" }}>/{d.hours}h</span>
+                                  <button onClick={() => onSetExtraDay(d.key, on ? 0 : d.hours)}
+                                    style={{ fontFamily: "'DM Mono', monospace", fontSize: 9, background: on ? "#b5561f" : "none", border: `1px solid ${on ? "#b5561f" : "#e0dbd4"}`, borderRadius: 5, padding: "4px 7px", cursor: "pointer", color: on ? "#fff" : "#888", whiteSpace: "nowrap" }}>
+                                    {on ? "clear" : "all"}
+                                  </button>
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
                       </div>
                     )}
                   </div>
